@@ -33,6 +33,17 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# credentials & service account keys
+credentials/
+pttr-taskdata-*.json
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!components.json
+!next.config.json
+!firebase.json
+
 # vercel
 .vercel
 

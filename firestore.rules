@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /crm_notes/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /crm_lead_overrides/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /crm_account_notes/{doc} {
+      allow read, write: if request.auth != null;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

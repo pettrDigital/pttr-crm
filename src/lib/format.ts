@@ -1,0 +1,61 @@
+import { format } from 'date-fns'
+
+export function formatPhone(phone: string | null | undefined): string {
+  if (!phone) return '—'
+  const digits = phone.replace(/\D/g, '')
+  // AU mobile: 04XX XXX XXX
+  if (digits.startsWith('61') && digits.length === 11) {
+    const local = '0' + digits.slice(2)
+    if (local.startsWith('04')) {
+      return `${local.slice(0, 4)} ${local.slice(4, 7)} ${local.slice(7)}`
+    }
+    return `(${local.slice(0, 2)}) ${local.slice(2, 6)} ${local.slice(6)}`
+  }
+  if (digits.startsWith('04') && digits.length === 10) {
+    return `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`
+  }
+  if (digits.length === 10 && digits.startsWith('0')) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)} ${digits.slice(6)}`
+  }
+  return phone
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function safeDate(val: any): Date | null {
+  if (!val) return null
+  try {
+    const d = new Date(typeof val === 'object' && val.value != null ? val.value : val)
+    return isNaN(d.getTime()) ? null : d
+  } catch {
+    return null
+  }
+}
+
+export function formatDate(val: unknown, fmt = 'd MMM yyyy'): string {
+  const d = safeDate(val)
+  if (!d) return '—'
+  return format(d, fmt)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function formatCurrency(value: any): string {
+  if (value == null) return '—'
+  // BigQuery returns numeric types as objects with a .value property
+  const raw = typeof value === 'object' && value.value != null ? value.value : value
+  const num = typeof raw === 'number' ? raw : Number(raw)
+  if (isNaN(num)) return '—'
+  if (Math.abs(num) >= 100) {
+    return `$${Math.round(num).toLocaleString('en-AU')}`
+  }
+  return `$${num.toFixed(2)}`
+}
+
+export function channelIcon(channel: string): string {
+  switch (channel?.toLowerCase()) {
+    case 'inbound call': return '📞↙️'
+    case 'outbound call': return '📞↗️'
+    case 'inbound email': return '📥'
+    case 'outbound email': return '📤'
+    default: return channel ?? ''
+  }
+}
