@@ -133,6 +133,12 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       ),
     },
     {
+      accessorKey: 'funnel_stage',
+      header: 'Funnel Stage',
+      cell: ({ row }) => row.original.funnel_stage ? <FunnelStageBadge stage={row.original.funnel_stage} /> : '—',
+    },
+    { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.dnp_reason ?? '—' },
+    {
       accessorKey: 'channel',
       header: 'Channel',
       cell: ({ row }) => <ChannelBadge channel={row.original.channel} />,
@@ -168,12 +174,6 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       cell: ({ row }) => <MediumBadge medium={row.original.lead_medium} />,
     },
     {
-      accessorKey: 'funnel_stage',
-      header: 'Funnel Stage',
-      cell: ({ row }) => row.original.funnel_stage ? <FunnelStageBadge stage={row.original.funnel_stage} /> : '—',
-    },
-    { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.dnp_reason ?? '—' },
-    {
       accessorKey: 'job_value',
       header: 'Value',
       enableColumnFilter: false,
@@ -208,7 +208,7 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       columns={columns}
       data={filtered}
       filterControls={filterControls}
-      frozenColumns={3}
+      frozenColumns={5}
       enableColumnFilters
     />
   )
