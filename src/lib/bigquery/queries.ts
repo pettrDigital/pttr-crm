@@ -151,7 +151,7 @@ export async function getCallDetail(leadId: number, dt: string) {
       COALESCE(agent.callee_name, CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END, rc.callee_name) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
       COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
@@ -160,6 +160,7 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
@@ -215,7 +216,7 @@ export async function getCallDetail(leadId: number, dt: string) {
       ) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
       COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
@@ -228,6 +229,7 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
