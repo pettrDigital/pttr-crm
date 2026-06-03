@@ -226,7 +226,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
       })
 
     return () => { cancelled = true }
-  }, [interactionDetail?.recording_url])
+  }, [interactionDetail?.recording_url, interactionDetail?.wc_recording_url])
 
   const handleInteractionClick = useCallback(async (ix: LeadInteraction) => {
     if (!lead) return
