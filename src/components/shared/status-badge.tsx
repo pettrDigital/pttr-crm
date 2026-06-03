@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { CircleCheck, Clock, CircleX, X, Ban, PhoneOff, Loader } from 'lucide-react'
+import { CircleCheck, Clock, CircleX, X, Hand, PhoneOff, Loader } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 const clientCategoryStyles: Record<string, string> = {
@@ -15,7 +15,7 @@ const funnelStageConfig: Record<string, { icon: LucideIcon; iconClass: string; t
   'Booked - Pending': { icon: Clock, iconClass: 'text-blue-600', textClass: 'text-blue-800' },
   'Booked - Did Not Complete': { icon: CircleX, iconClass: 'text-orange-500', textClass: 'text-orange-800' },
   'Not Booked': { icon: X, iconClass: 'text-red-500', textClass: 'text-red-800' },
-  'Not Quotable': { icon: Ban, iconClass: 'text-gray-400', textClass: 'text-gray-600' },
+  'Not Quotable': { icon: Hand, iconClass: 'text-gray-400', textClass: 'text-gray-600' },
   'Not Captured': { icon: PhoneOff, iconClass: 'text-gray-400', textClass: 'text-gray-600' },
   'Pending': { icon: Loader, iconClass: 'text-yellow-600', textClass: 'text-yellow-800' },
 }
