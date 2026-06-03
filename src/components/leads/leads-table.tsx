@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { useState, useMemo } from 'react'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
 import {
-  CheckCircle, PhoneIncoming, FileText, Mail, MessageCircle,
+  UserCheck, PhoneIncoming, FileText, Mail, MessageCircle,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
   Sprout, DollarSign, Users, Minus, Link,
 } from 'lucide-react'
@@ -109,17 +109,17 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       cell: ({ row }) => formatDate(row.original.lead_date),
     },
     {
+      id: 'existing_client',
+      header: '',
+      enableColumnFilter: false,
+      cell: ({ row }) => row.original.is_existing_client
+        ? <span title="Existing client"><UserCheck className="h-3.5 w-3.5 text-green-600" /></span>
+        : null,
+    },
+    {
       accessorKey: 'lead_id',
       header: 'Lead ID',
       enableColumnFilter: false,
-      cell: ({ row }) => (
-        <span className="flex items-center gap-1">
-          {row.original.is_existing_client && (
-            <span title="Existing client"><CheckCircle className="inline-block h-3.5 w-3.5 text-green-600" /></span>
-          )}
-          {row.original.lead_id}
-        </span>
-      ),
     },
     {
       accessorKey: 'funnel_stage',
@@ -197,7 +197,7 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       columns={columns}
       data={filtered}
       filterControls={filterControls}
-      frozenColumns={5}
+      frozenColumns={6}
       enableColumnFilters
     />
   )
