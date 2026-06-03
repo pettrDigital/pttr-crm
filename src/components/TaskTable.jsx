@@ -161,7 +161,9 @@ export default function TaskTable({ onOpenTask, rows: externalRows }) {
     e.stopPropagation();
     e.preventDefault();
     const startX = e.clientX;
-    const startW = widths[colKey];
+    // Read current width from the actual <col> element to avoid stale closure
+    const th = e.currentTarget.parentElement;
+    const startW = th ? th.offsetWidth : 100;
     const handle = e.currentTarget;
     handle.classList.add("active");
 
@@ -178,7 +180,7 @@ export default function TaskTable({ onOpenTask, rows: externalRows }) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     dragRef.current = { colKey };
-  }, [widths]);
+  }, []);
 
   const counts = useMemo(() => {
     const c = { all: data.length };
