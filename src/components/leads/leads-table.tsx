@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useState, useMemo } from 'react'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { CheckCircle } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
 function ChannelBadge({ channel }: { channel: string }) {
@@ -126,7 +127,7 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
         <span className="flex items-center gap-1">
           {row.original.lead_id}
           {row.original.is_existing_client && (
-            <span className="inline-block w-2 h-2 rounded-full bg-amber-500" title="Existing client" />
+            <span title="Existing client"><CheckCircle className="inline-block h-3.5 w-3.5 text-green-600" /></span>
           )}
         </span>
       ),

@@ -44,10 +44,19 @@ export async function getLeads(limit = 500) {
       LIMIT @limit
     ),
     -- First interaction operator per lead
+    -- Only show real person names: "Firstname Lastname" pattern, excluding known queue/system names
     lead_operators AS (
       SELECT li.lead_id,
         FIRST_VALUE(
-          COALESCE(agent.callee_name, NULLIF(TRIM(li.operator_name), ''), rc.callee_name)
+          COALESCE(
+            agent.callee_name,
+            CASE WHEN REGEXP_CONTAINS(COALESCE(li.operator_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+')
+                  AND li.operator_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+                 THEN li.operator_name END,
+            CASE WHEN REGEXP_CONTAINS(COALESCE(rc.callee_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+')
+                  AND rc.callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+                 THEN rc.callee_name END
+          )
         ) OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS first_operator,
         ROW_NUMBER() OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS rn
       FROM \`${DS}.lead_interactions\` li
@@ -58,6 +67,8 @@ export async function getLeads(limit = 500) {
         FROM \`${DS}.raw_call_legs\`
         WHERE answered = 'Answered' AND direction = 'Internal'
           AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+          AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+')
+          AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
       ) agent ON rc.call_id = agent.parent_call_id AND agent.lrn = 1
       WHERE li.contact_type = 'Phone'
     ),
