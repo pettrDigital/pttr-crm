@@ -240,7 +240,7 @@ export async function getJobHistory(phoneNorm: string, email: string) {
       SELECT * FROM completed_jobs
       UNION ALL
       SELECT * FROM active_jobs
-    )
+    ),
     task_notes_agg AS (
       SELECT jobnumber,
              STRING_AGG(CONCAT(COALESCE(dateposted, ''), ' — ', COALESCE(username, ''), ': ', COALESCE(note_clean, '')), '\n' ORDER BY dateposted DESC) AS task_notes
