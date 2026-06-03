@@ -7,87 +7,76 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useState, useMemo } from 'react'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
-import { CheckCircle } from 'lucide-react'
+import {
+  CheckCircle, PhoneIncoming, FileText, Mail, MessageCircle,
+  Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
+  Sprout, DollarSign, Users, Minus, Link,
+} from 'lucide-react'
 import type { Lead } from '@/types/database'
 
-function ChannelBadge({ channel }: { channel: string }) {
+function ChannelIcon({ channel }: { channel: string }) {
   const ch = channel?.toLowerCase() ?? ''
   if (ch.includes('call') || ch.includes('phone')) {
-    return <Badge variant="secondary" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300 font-medium">Call</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><PhoneIncoming className="h-3.5 w-3.5" />Call</span>
   }
   if (ch.includes('form') || ch.includes('web')) {
-    return <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300 font-medium">Form</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Form</span>
   }
   if (ch.includes('email')) {
-    return <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300 font-medium">Email</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-teal-600"><Mail className="h-3.5 w-3.5" />Email</span>
   }
-  return <Badge variant="secondary">{channel || '—'}</Badge>
+  if (ch.includes('chat')) {
+    return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><MessageCircle className="h-3.5 w-3.5" />Chat</span>
+  }
+  return <span className="text-[13px] text-muted-foreground">{channel || '—'}</span>
 }
 
-function LeadProfileBadge({ profile }: { profile: string }) {
+function ProfileIcon({ profile }: { profile: string }) {
   if (profile.toLowerCase().includes('plumber')) {
-    return <Badge variant="secondary" className="bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300 font-medium">PTTR</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Droplet className="h-3.5 w-3.5" />PTTR</span>
   }
   if (profile.toLowerCase().includes('electr')) {
-    return <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300 font-medium">ETTR</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-amber-600"><Zap className="h-3.5 w-3.5" />ETTR</span>
   }
-  return <Badge variant="secondary">{profile}</Badge>
+  return <span className="text-[13px] text-muted-foreground">{profile}</span>
 }
 
-// Source badge — group by category: search engines, paid, direct, social, directories, other
-function SourceBadge({ source }: { source: string }) {
+function SourceIcon({ source }: { source: string }) {
   if (!source) return <span className="text-muted-foreground">—</span>
   const s = source.toLowerCase()
 
-  // Paid / Magnet
-  if (s.includes('magnet')) {
-    return <Badge variant="secondary" className="bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-300 font-medium">{source}</Badge>
+  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
+  if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><MapPin className="h-3.5 w-3.5" />{source}</span>
+  if (s === '(direct)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
+
+  // Search engines
+  if (['bing', 'yahoo', 'duckduckgo.com', 'ecosia.org', 'search.brave.com', 'perplexity'].includes(s)) {
+    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
   }
-  // Google (organic search + GMB)
-  if (s === 'google' || s === 'gmb') {
-    return <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300 font-medium">{source}</Badge>
-  }
-  // Other search engines
-  if (['bing', 'yahoo', 'duckduckgo.com', 'ecosia.org', 'search.brave.com', 'perplexity'].includes(s) || s.includes('searchengine')) {
-    return <Badge variant="secondary" className="bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300 font-medium">{source}</Badge>
-  }
-  // AI / chat
-  if (s.includes('chatgpt')) {
-    return <Badge variant="secondary" className="bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-300 font-medium">{source}</Badge>
-  }
+  // AI
+  if (s.includes('chatgpt')) return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Globe className="h-3.5 w-3.5" />{source}</span>
   // Own websites
   if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) {
-    return <Badge variant="secondary" className="bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300 font-medium">{source}</Badge>
+    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Link className="h-3.5 w-3.5" />{source}</span>
   }
-  // Social
-  if (s.includes('facebook')) {
-    return <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300 font-medium">{source}</Badge>
-  }
-  // Directories
-  if (s.includes('yellowpages') || s.includes('yelp') || s.includes('houzz') || s.includes('localsearch') || s.includes('masterplumbers')) {
-    return <Badge variant="secondary" className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300 font-medium">{source}</Badge>
-  }
-  // Direct
-  if (s === '(direct)') {
-    return <Badge variant="secondary" className="bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 font-medium">{source}</Badge>
+  // Social / referral sites
+  if (s.includes('facebook') || s.includes('houzz') || s.includes('yelp') || s.includes('yellowpages') || s.includes('localsearch') || s.includes('masterplumbers')) {
+    return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><ExternalLink className="h-3.5 w-3.5" />{source}</span>
   }
   // Fallback
-  return <Badge variant="secondary" className="bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-medium">{source}</Badge>
+  return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{source}</span>
 }
 
-// Medium badge — consistent color per type
-const mediumStyles: Record<string, string> = {
-  cpc: 'bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-300',
-  organic: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300',
-  referral: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
-  magnet: 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300',
-  '(none)': 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
-}
-
-function MediumBadge({ medium }: { medium: string }) {
+function MediumIcon({ medium }: { medium: string }) {
   if (!medium) return <span className="text-muted-foreground">—</span>
-  const style = mediumStyles[medium.toLowerCase()] ?? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-  return <Badge variant="secondary" className={`${style} font-medium`}>{medium}</Badge>
+  const m = medium.toLowerCase()
+
+  if (m === 'organic') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />{medium}</span>
+  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
+  if (m === 'referral') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Users className="h-3.5 w-3.5" />{medium}</span>
+  if (m === '(none)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Minus className="h-3.5 w-3.5" />None</span>
+  // Fallback
+  return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{medium}</span>
 }
 
 interface LeadsTableProps {
@@ -141,12 +130,12 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
     {
       accessorKey: 'channel',
       header: 'Channel',
-      cell: ({ row }) => <ChannelBadge channel={row.original.channel} />,
+      cell: ({ row }) => <ChannelIcon channel={row.original.channel} />,
     },
     {
       accessorKey: 'profile',
       header: 'Profile',
-      cell: ({ row }) => row.original.profile ? <LeadProfileBadge profile={row.original.profile} /> : '—',
+      cell: ({ row }) => row.original.profile ? <ProfileIcon profile={row.original.profile} /> : '—',
     },
     { accessorKey: 'contact_name', header: 'Contact' },
     { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => formatPhone(row.original.phone_norm) },
@@ -166,12 +155,12 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
     {
       accessorKey: 'lead_source',
       header: 'Source',
-      cell: ({ row }) => <SourceBadge source={row.original.lead_source} />,
+      cell: ({ row }) => <SourceIcon source={row.original.lead_source} />,
     },
     {
       accessorKey: 'lead_medium',
       header: 'Medium',
-      cell: ({ row }) => <MediumBadge medium={row.original.lead_medium} />,
+      cell: ({ row }) => <MediumIcon medium={row.original.lead_medium} />,
     },
     {
       accessorKey: 'job_value',
