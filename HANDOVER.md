@@ -36,13 +36,26 @@ Next.js CRM + analytics dashboard for PETTR (Plumber to the Rescue / Electrician
 
 ### Interaction Content API
 - `/api/leads/[id]/interaction?type=call|email&datetime=ISO` — fetches full transcript or email body
-- Call detail: joins `lead_interactions` → `raw_calls` → `call_transcripts` → `raw_recordings` with ±5 second datetime BETWEEN matching
+- **Call detail — two-pass matching**:
+  - Pass 1: exact `call_id` join between `lead_interactions` and `raw_calls` (works for 94% of calls where WC and 8x8 IDs match)
+  - Pass 2 (fallback): matches by datetime ±30 seconds + tracking number (`lead_interactions.contact_to` = `raw_calls.caller`) — catches afterhours-routed calls where 8x8 sees the WC tracking number as the caller
+  - Both passes: `COALESCE(ct.full_transcript, li.contact_content)` for transcript (8x8 transcription → WC transcription fallback), `COALESCE(rr.gcs_uri, li.gcs_uri)` for GCS recording
+  - Both passes JOIN `ettr_leads`/`pttr_leads` to get `wc_recording_url` (WhatConverts recording download URL)
 - Email detail: queries `lead_interactions` for `contact_content` (full body up to 13k chars)
+- Interaction timeline filter: 5-minute buffer before `lead_datetime` catches triggering calls that start before the lead record is created
 
-### Call Recordings Route
-- `/api/recordings?uri=gs://pttr-recordings/...` — generates 15-minute signed URL via `@google-cloud/storage`
-- Locked to `pttr-recordings` bucket only (rejects other buckets with 400)
-- Requires `crm-build@pttr-taskdata.iam.gserviceaccount.com` to have `objectViewer` on the bucket (not yet granted — see Known Issues)
+### Call Recordings — 100% Coverage
+- **8x8 recordings (90% of calls)**: `/api/recordings?uri=gs://pttr-recordings/...` generates 15-minute GCS signed URL. Locked to `pttr-recordings` bucket. SA `crm-build@` has `objectViewer` on the bucket.
+- **WhatConverts recordings (all calls including afterhours)**: `/api/recordings/wc?url=...` proxies WC recording downloads with Basic auth (`WC_API_TOKEN`/`WC_API_SECRET`). Validates URL is from `app.whatconverts.com/recording/`. Streams audio or returns redirect URL.
+- **Audio player**: tries GCS signed URL first → falls back to WC proxy. Shows loading spinner, "Recording unavailable" on error, hidden if no recording exists.
+- **Pipeline**: `fetch-whatconverts-combined` Cloud Function extracts `recording_url` and `play_recording_url` from WC API leads response → stored in `gd_WhatConverts.ettr_leads` / `pttr_leads` → joined into `getCallDetail` query via lead_id.
+
+### Call Matching Stats
+- 1,301 total phone interactions in `lead_interactions`
+- 1,228 (94%) matched to 8x8 via call_id at ingestion
+- 42 (3.2%) unmatched — afterhours calls routed via Vodafone answering service, never hit 8x8 PBX
+- 316 (24%) have WC transcripts in `contact_content`
+- 570 (100% of calls in `ettr_leads`/`pttr_leads`) have WC recording URLs
 
 ### BigQuery Client
 - `flattenRow()` in `src/lib/bigquery/client.ts` handles both `{value: "..."}` wrappers (DATETIME/TIMESTAMP) and Big.js objects (NUMERIC) — converts to plain JSON-serializable values at query level
@@ -103,9 +116,11 @@ Next.js CRM + analytics dashboard for PETTR (Plumber to the Rescue / Electrician
 - Root cause: `vw_leads` derives funnel_stage from `lead_class` in WhatConverts (`all_leads_classified`), not from AroFlo job status
 - Fix requires enriching the classification with a cross-check against AroFlo job data
 
-### Bug 3: Storage permissions for recordings
-- `crm-build@pttr-taskdata.iam.gserviceaccount.com` does not yet have `storage.objectViewer` on `pttr-recordings` bucket
-- Run: `gsutil iam ch serviceAccount:crm-build@pttr-taskdata.iam.gserviceaccount.com:objectViewer gs://pttr-recordings`
+### Bug 3: 8x8 CDR gaps for queue extensions
+- Extensions 712 (ETTR Webpage), 717 (PTTR Web), 754 (PTTR Adwords) receive WC-tracked calls but some don't appear in `raw_calls`
+- The `pettr-8x8-bigquery` function pulls all CDRs from PBX `reliancecommunica977` with no filters — the gap is likely in how 8x8 reports call queue CDRs vs direct extension calls
+- Affects ~72 calls in the current dataset — these are handled by the WC recording fallback
+- Investigation needed: check 8x8 Analytics API docs for call queue CDR behaviour
 
 ### Bug 4: AroFlo location data gaps
 - COD jobs with free-text addresses only have `tasklocation_locationname` (e.g. "142 Garden Street, Maroubra") — no structured suburb/state/postcode
@@ -115,8 +130,7 @@ Next.js CRM + analytics dashboard for PETTR (Plumber to the Rescue / Electrician
 
 ## What Still Needs to Be Built
 
-1. **Call recordings audio player** — wire up the `/api/recordings` signed URL route to an `<audio>` player in the call detail view (grant storage permissions first)
-2. **Accounts page + detail sheet** — scaffold exists but needs data table polish (frozen columns, badges, filters) matching the leads page
+1. **Accounts page + detail sheet** — scaffold exists but needs data table polish (frozen columns, badges, filters) matching the leads page
 3. **Contacts page + detail sheet** — same as accounts
 4. **Tasks/Jobs page + detail sheet** — new page showing AroFlo jobs with status, type, invoice amounts, linked leads
 5. **Universal search** — API route exists (`/api/search`), needs UI: command palette (cmdk) in top bar, results linking to accounts/contacts/leads
@@ -148,6 +162,9 @@ FIREBASE_ADMIN_PRIVATE_KEY=...
 FIREBASE_ADMIN_CLIENT_EMAIL=...
 
 ALLOWED_USERS=ricgordon1977@gmail.com,digital.plumbertotherescue@gmail.com,fergusgordon77@gmail.com
+
+WC_API_TOKEN=...        # WhatConverts API token (for recording proxy)
+WC_API_SECRET=...       # WhatConverts API secret
 ```
 
 ### Run locally
@@ -164,6 +181,9 @@ gcloud functions call aroflo-daily-orchestrator --project=pttr-taskdata --region
 
 # Trigger custom fields ingest (separate)
 gcloud functions call aroflo-customfields-ingest --project=pttr-taskdata --region=australia-southeast1
+
+# Trigger WhatConverts resync (includes recording URLs)
+gcloud functions call fetch-whatconverts-combined --project=pttr-taskdata --region=us-central1
 
 # Run scheduled queries (dedup views, tasks_complete rebuild, etc.)
 bq mk --transfer_run --project_id=pttr-taskdata --run_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)" projects/594562749975/locations/us/transferConfigs/6a33a06f-0000-2556-89d8-582429a9af50
@@ -187,3 +207,6 @@ firebase deploy --only firestore:rules --project pettr-data
 - **Client-side fetches for detail panels** — sheet/modal content loaded on demand via API routes
 - **Per-route auth, not middleware** — explicit `verifyAuth()` call at top of each route for clarity
 - **Job history matches by phone/email, not lead_id** — because AroFlo jobs aren't linked to WhatConverts leads; matching uses last-9-digit phone normalization and email to find all jobs for a client across both `tasks_complete` and `tasks_deduped`
+- **`authFetch` wrapper for client-side API calls** — `src/lib/auth/auth-fetch.ts` waits for Firebase auth state to resolve via `onAuthStateChanged` before attaching the Bearer token. Required because `auth.currentUser` is null on page load until the async restore completes.
+- **Two-source call recordings** — GCS signed URLs for 8x8 recordings (90%), WC authenticated proxy for the rest (afterhours calls). 100% recording coverage.
+- **Date-only string handling** — `safeDate()` appends `T12:00:00` to date-only strings (`YYYY-MM-DD`) to prevent timezone day shift (BigQuery returns Sydney dates, browser in US timezone would shift them back a day)
