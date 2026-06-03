@@ -96,7 +96,8 @@ export async function getLeads(limit = 500) {
          OR (tc.requested_date_parsed BETWEEN vl.lead_date AND DATE_ADD(vl.lead_date, INTERVAL 30 DAY))
       GROUP BY vl.lead_id
     )
-    SELECT l.*,
+    SELECT l.* EXCEPT(contact_name),
+      COALESCE(NULLIF(TRIM(l.contact_name), ''), INITCAP(NULLIF(TRIM(alc.caller_name), ''))) AS contact_name,
       lo.first_operator AS operator,
       ec.lead_id IS NOT NULL AS is_existing_client,
       COALESCE(jv.job_invoice_value, l.sales_value) AS job_value
@@ -104,6 +105,7 @@ export async function getLeads(limit = 500) {
     LEFT JOIN lead_operators lo ON l.lead_id = lo.lead_id AND lo.rn = 1
     LEFT JOIN existing_clients ec ON l.lead_id = ec.lead_id
     LEFT JOIN job_values jv ON l.lead_id = jv.lead_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON l.lead_id = alc.lead_id
     ORDER BY l.lead_date DESC
   `, { limit })
 }

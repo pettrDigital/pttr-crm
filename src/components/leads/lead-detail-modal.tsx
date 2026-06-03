@@ -197,21 +197,21 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
     setRecordingError(false)
 
     async function fetchRecording() {
-      // Try GCS signed URL first (8x8 recordings)
-      if (gcsUri) {
+      // Try WC recording first (available for all calls)
+      if (wcUrl) {
         try {
-          const res = await authFetch(`/api/recordings?uri=${encodeURIComponent(gcsUri)}`)
+          const res = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(wcUrl)}`)
           if (res.ok) {
             const data = await res.json()
             if (!cancelled) setRecordingUrl(data.url)
             return
           }
-        } catch { /* fall through to WC */ }
+        } catch { /* fall through to GCS */ }
       }
-      // Fallback: WC recording proxy
-      if (wcUrl) {
+      // Fallback: GCS signed URL (8x8 recordings)
+      if (gcsUri) {
         try {
-          const res = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(wcUrl)}`)
+          const res = await authFetch(`/api/recordings?uri=${encodeURIComponent(gcsUri)}`)
           if (res.ok) {
             const data = await res.json()
             if (!cancelled) setRecordingUrl(data.url)
