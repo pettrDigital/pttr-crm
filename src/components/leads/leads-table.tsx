@@ -45,7 +45,7 @@ function SourceIcon({ source }: { source: string }) {
   if (!source) return <span className="text-muted-foreground">—</span>
   const s = source.toLowerCase()
 
-  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
+  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-orange-600"><Search className="h-3.5 w-3.5" />{source}</span>
   if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><MapPin className="h-3.5 w-3.5" />{source}</span>
   if (s === '(direct)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
 
@@ -72,7 +72,7 @@ function MediumIcon({ medium }: { medium: string }) {
   const m = medium.toLowerCase()
 
   if (m === 'organic') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />{medium}</span>
-  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
+  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-orange-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
   if (m === 'referral') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Users className="h-3.5 w-3.5" />{medium}</span>
   if (m === '(none)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Minus className="h-3.5 w-3.5" />None</span>
   // Fallback
