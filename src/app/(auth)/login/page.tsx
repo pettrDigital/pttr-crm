@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth'
+import { signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth'
 import { auth } from '@/lib/firebase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,6 +20,19 @@ export default function LoginPage() {
       const result = await signInWithPopup(auth, provider)
       const idToken = await result.user.getIdToken()
 
+      // Check allowlist before creating session
+      const accessRes = await fetch('/api/auth/check-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      })
+
+      if (!accessRes.ok) {
+        await signOut(auth)
+        setError("You don't have access to this application. Contact your administrator.")
+        return
+      }
+
       // Create session cookie via API
       const res = await fetch('/api/auth/session', {
         method: 'POST',
@@ -33,7 +46,9 @@ export default function LoginPage() {
 
       router.push('/dashboard')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign-in failed')
+      if (!error) {
+        setError(err instanceof Error ? err.message : 'Sign-in failed')
+      }
     } finally {
       setLoading(false)
     }
