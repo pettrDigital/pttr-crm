@@ -69,12 +69,13 @@ export async function getLeadDetail(leadId: string) {
 // ─── INTERACTION DETAIL ─────────────────────────────────────────────────────
 export async function getCallDetail(leadId: number, dt: string) {
   // Pass 1: exact call_id join (works when WhatConverts and 8x8 IDs match)
+  // Agent name: call_legs answered leg → operator_name → raw_calls callee_name
   const rows = await query(`
     SELECT
       li.lead_id,
       li.contact_datetime_sydney AS call_datetime,
       rc.norm_caller_phone AS caller_phone,
-      rc.callee_name AS operator,
+      COALESCE(agent.callee_name, li.operator_name, rc.callee_name) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
       COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
@@ -86,6 +87,16 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name, talk_time_ms,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered'
+        AND direction = 'Internal'
+        AND callee NOT LIKE 'CallForking%'
+        AND callee NOT LIKE 'RingGroup%'
+        AND callee NOT LIKE 'AutoAttendant%'
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
     WHERE li.lead_id = @leadId
       AND li.contact_type = 'Phone'
       AND li.contact_datetime_sydney BETWEEN
@@ -99,12 +110,18 @@ export async function getCallDetail(leadId: number, dt: string) {
   // Pass 2: fallback — match by datetime + tracking number
   // WhatConverts tracking number (li.contact_to) shows as caller in 8x8 (rc.caller)
   // Use ±30 second window for clock drift between systems
+  // For afterhours calls with no 8x8 match, show "Afterhours Service"
   return query(`
     SELECT
       li.lead_id,
       li.contact_datetime_sydney AS call_datetime,
       rc.norm_caller_phone AS caller_phone,
-      rc.callee_name AS operator,
+      COALESCE(
+        agent.callee_name,
+        li.operator_name,
+        rc.callee_name,
+        CASE WHEN li.contact_subject LIKE 'Afterhours%' THEN 'Afterhours Service' END
+      ) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
       COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
@@ -120,6 +137,16 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name, talk_time_ms,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered'
+        AND direction = 'Internal'
+        AND callee NOT LIKE 'CallForking%'
+        AND callee NOT LIKE 'RingGroup%'
+        AND callee NOT LIKE 'AutoAttendant%'
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
     WHERE li.lead_id = @leadId
       AND li.contact_type = 'Phone'
       AND li.contact_datetime_sydney BETWEEN
