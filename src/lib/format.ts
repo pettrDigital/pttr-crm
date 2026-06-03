@@ -24,7 +24,21 @@ export function formatPhone(phone: string | null | undefined): string {
 export function safeDate(val: any): Date | null {
   if (!val) return null
   try {
-    const d = new Date(typeof val === 'object' && val.value != null ? val.value : val)
+    const raw = typeof val === 'object' && val.value != null ? val.value : val
+    const str = String(raw)
+    // Date-only strings like "2026-06-02" are parsed as UTC midnight by JS,
+    // which shifts the day in non-UTC timezones. Append T12:00:00 to keep
+    // the date stable regardless of the user's local timezone.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      const d = new Date(str + 'T12:00:00')
+      return isNaN(d.getTime()) ? null : d
+    }
+    // "YYYY/MM/DD" format (from AroFlo) — same fix
+    if (/^\d{4}\/\d{2}\/\d{2}$/.test(str)) {
+      const d = new Date(str.replace(/\//g, '-') + 'T12:00:00')
+      return isNaN(d.getTime()) ? null : d
+    }
+    const d = new Date(raw)
     return isNaN(d.getTime()) ? null : d
   } catch {
     return null

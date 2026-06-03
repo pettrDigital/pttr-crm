@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Input } from '@/components/ui/input'
 import { Search } from 'lucide-react'
+import { authFetch } from '@/lib/auth/auth-fetch'
 import type { SearchResult } from '@/types/database'
 
 export function TopBar() {
@@ -21,7 +22,7 @@ export function TopBar() {
     }
 
     const timer = setTimeout(async () => {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`)
+      const res = await authFetch(`/api/search?q=${encodeURIComponent(query)}`)
       const data = await res.json()
       setResults(data)
       setOpen(true)

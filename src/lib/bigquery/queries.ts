@@ -68,6 +68,37 @@ export async function getLeadDetail(leadId: string) {
 
 // ─── INTERACTION DETAIL ─────────────────────────────────────────────────────
 export async function getCallDetail(leadId: number, dt: string) {
+  // Pass 1: exact call_id join (works when WhatConverts and 8x8 IDs match)
+  const rows = await query(`
+    SELECT
+      li.lead_id,
+      li.contact_datetime_sydney AS call_datetime,
+      rc.norm_caller_phone AS caller_phone,
+      rc.callee_name AS operator,
+      li.operator_name,
+      rc.talk_time AS duration_seconds,
+      COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
+      COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
+      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+    FROM \`${DS}.lead_interactions\` li
+    JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
+    LEFT JOIN \`${DS}.call_transcripts\` ct ON li.call_id = ct.call_id
+    LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    WHERE li.lead_id = @leadId
+      AND li.contact_type = 'Phone'
+      AND li.contact_datetime_sydney BETWEEN
+        DATETIME_SUB(CAST(@dt AS DATETIME), INTERVAL 5 SECOND)
+        AND DATETIME_ADD(CAST(@dt AS DATETIME), INTERVAL 5 SECOND)
+    LIMIT 1
+  `, { leadId, dt })
+
+  if (rows.length > 0) return rows
+
+  // Pass 2: fallback — match by datetime + tracking number
+  // WhatConverts tracking number (li.contact_to) shows as caller in 8x8 (rc.caller)
+  // Use ±30 second window for clock drift between systems
   return query(`
     SELECT
       li.lead_id,
@@ -76,12 +107,19 @@ export async function getCallDetail(leadId: number, dt: string) {
       rc.callee_name AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
-      ct.full_transcript,
-      rr.gcs_uri AS recording_url
+      COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
+      COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
+      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
-    JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
-    LEFT JOIN \`${DS}.call_transcripts\` ct ON li.call_id = ct.call_id
-    LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
+    LEFT JOIN \`${DS}.raw_calls\` rc
+      ON rc.caller = li.contact_to
+      AND rc.start_time BETWEEN
+        TIMESTAMP_SUB(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
+        AND TIMESTAMP_ADD(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
+    LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
+    LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
     WHERE li.lead_id = @leadId
       AND li.contact_type = 'Phone'
       AND li.contact_datetime_sydney BETWEEN

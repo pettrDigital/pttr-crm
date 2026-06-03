@@ -15,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ClientCategoryBadge } from '@/components/shared/status-badge'
 import { addAccountNote } from '@/lib/firebase/firestore'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { authFetch } from '@/lib/auth/auth-fetch'
 import type { Account, Location } from '@/types/database'
 
 interface AccountDetailSheetProps {
@@ -37,7 +38,7 @@ export function AccountDetailSheet({ account, open, onOpenChange }: AccountDetai
 
     async function fetchDetails() {
       setLoading(true)
-      const res = await fetch(`/api/accounts/${account!.account_id}/locations`)
+      const res = await authFetch(`/api/accounts/${account!.account_id}/locations`)
       const data = await res.json()
       setLocations(data)
       setLoading(false)

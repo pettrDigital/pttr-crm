@@ -10,6 +10,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { authFetch } from '@/lib/auth/auth-fetch'
 import type { Contact, LeadInteraction } from '@/types/database'
 
 interface ContactDetailSheetProps {
@@ -30,7 +31,7 @@ export function ContactDetailSheet({ contact, open, onOpenChange }: ContactDetai
 
     async function fetchTimeline() {
       setLoading(true)
-      const res = await fetch(`/api/contacts/${contact!.contact_id}/timeline`)
+      const res = await authFetch(`/api/contacts/${contact!.contact_id}/timeline`)
       const data = await res.json()
       setTimeline(data)
       setLoading(false)

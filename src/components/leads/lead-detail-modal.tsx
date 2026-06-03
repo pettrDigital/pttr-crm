@@ -15,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { FunnelStageBadge } from '@/components/shared/status-badge'
 import { addLeadNote } from '@/lib/firebase/firestore'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { authFetch } from '@/lib/auth/auth-fetch'
 import { ArrowLeft, ChevronDown, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
 import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
 
@@ -25,6 +26,7 @@ interface InteractionDetail {
   duration_seconds?: number
   full_transcript?: string
   recording_url?: string
+  wc_recording_url?: string
   call_datetime?: string
   from_address?: string
   to_address?: string
@@ -85,18 +87,24 @@ function hasDnp(reason: string | null | undefined): boolean {
   return r !== '' && r !== '--' && r !== '-' && r !== 'select one'
 }
 
-/** Filter interactions to within 30 days after the lead was created */
+/** Filter interactions to within 30 days of the lead creation.
+ *  Uses a 5-minute buffer before the lead time because the call that
+ *  created the lead starts slightly before the lead record is created.
+ *  Both lead_datetime and interaction_datetime are Sydney local (DATETIME),
+ *  so we compare them as plain strings to avoid timezone conversion issues. */
 function filterRecentInteractions(interactions: LeadInteraction[]): LeadInteraction[] {
-  if (interactions.length === 0) return interactions
-  // Get lead_datetime from the first interaction (all share the same lead)
+  if (!Array.isArray(interactions) || interactions.length === 0) return []
   const leadDt = interactions[0]?.lead_datetime
   if (!leadDt) return interactions
   const leadDate = new Date(leadDt)
   if (isNaN(leadDate.getTime())) return interactions
-  const cutoff = new Date(leadDate.getTime() + 30 * 24 * 60 * 60 * 1000)
+  // 5 minutes before lead creation to catch the triggering call
+  const windowStart = new Date(leadDate.getTime() - 5 * 60 * 1000)
+  // 30 days after
+  const windowEnd = new Date(leadDate.getTime() + 30 * 24 * 60 * 60 * 1000)
   return interactions.filter((ix) => {
     const ixDate = new Date(ix.interaction_datetime)
-    return !isNaN(ixDate.getTime()) && ixDate >= leadDate && ixDate <= cutoff
+    return !isNaN(ixDate.getTime()) && ixDate >= windowStart && ixDate <= windowEnd
   })
 }
 
@@ -114,12 +122,18 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
   const [selectedInteraction, setSelectedInteraction] = useState<LeadInteraction | null>(null)
   const [interactionDetail, setInteractionDetail] = useState<InteractionDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
+  const [recordingLoading, setRecordingLoading] = useState(false)
+  const [recordingError, setRecordingError] = useState(false)
 
   useEffect(() => {
     if (!lead || !open) {
       setInteractions([])
       setSelectedInteraction(null)
       setInteractionDetail(null)
+      setRecordingUrl(null)
+      setRecordingLoading(false)
+      setRecordingError(false)
       setNoteOpen(false)
       setJobHistory([])
       setSpeedToLead(null)
@@ -128,8 +142,9 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
 
     async function fetchDetail() {
       setLoading(true)
-      const res = await fetch(`/api/leads/${lead!.lead_id}/detail`)
-      const data: LeadInteraction[] = await res.json()
+      const res = await authFetch(`/api/leads/${lead!.lead_id}/detail`)
+      const raw = await res.json()
+      const data: LeadInteraction[] = Array.isArray(raw) ? raw : []
 
       if (data.length > 0) {
         setSpeedToLead(data[0].speed_to_lead_minutes)
@@ -145,15 +160,57 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
       const params = new URLSearchParams()
       if (lead!.phone_norm) params.set('phone', lead!.phone_norm)
       if (lead!.email) params.set('email', lead!.email)
-      const res = await fetch(`/api/leads/${lead!.lead_id}/job-history?${params}`)
-      const data = await res.json()
-      setJobHistory(data)
+      const res = await authFetch(`/api/leads/${lead!.lead_id}/job-history?${params}`)
+      const raw = await res.json()
+      setJobHistory(Array.isArray(raw) ? raw : [])
       setJobHistoryLoading(false)
     }
 
     fetchDetail()
     fetchJobHistory()
   }, [lead, open])
+
+  // Fetch recording URL: try GCS signed URL first, fall back to WC proxy
+  useEffect(() => {
+    const gcsUri = interactionDetail?.recording_url
+    const wcUrl = interactionDetail?.wc_recording_url
+    if (!gcsUri && !wcUrl) return
+    let cancelled = false
+    setRecordingLoading(true)
+    setRecordingError(false)
+
+    async function fetchRecording() {
+      // Try GCS signed URL first (8x8 recordings)
+      if (gcsUri) {
+        try {
+          const res = await authFetch(`/api/recordings?uri=${encodeURIComponent(gcsUri)}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (!cancelled) setRecordingUrl(data.url)
+            return
+          }
+        } catch { /* fall through to WC */ }
+      }
+      // Fallback: WC recording proxy
+      if (wcUrl) {
+        try {
+          const res = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(wcUrl)}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (!cancelled) setRecordingUrl(data.url)
+            return
+          }
+        } catch { /* fall through */ }
+      }
+      if (!cancelled) setRecordingError(true)
+    }
+
+    fetchRecording().finally(() => {
+        if (!cancelled) setRecordingLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [interactionDetail?.recording_url])
 
   const handleInteractionClick = useCallback(async (ix: LeadInteraction) => {
     if (!lead) return
@@ -163,9 +220,12 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
     setSelectedInteraction(ix)
     setDetailLoading(true)
     setInteractionDetail(null)
+    setRecordingUrl(null)
+    setRecordingLoading(false)
+    setRecordingError(false)
 
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `/api/leads/${lead.lead_id}/interaction?type=${type}&datetime=${encodeURIComponent(ix.interaction_datetime)}`
       )
       if (res.ok) {
@@ -186,7 +246,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
 
   // Derive converted job from job history — find closest job within 30 days of lead date
   const convertedJob = useMemo(() => {
-    if (!lead || jobHistory.length === 0) return null
+    if (!lead || !Array.isArray(jobHistory) || jobHistory.length === 0) return null
     const leadDate = new Date(lead.lead_date || lead.lead_datetime)
     if (isNaN(leadDate.getTime())) return null
     const cutoff = new Date(leadDate.getTime() + 30 * 24 * 60 * 60 * 1000)
@@ -243,8 +303,20 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                       <div><span className="font-semibold text-muted-foreground">Duration</span> <span className="ml-1">{selectedInteraction.interaction_duration_seconds}s</span></div>
                     ) : null}
                   </div>
+                  {/* Audio player */}
+                  {recordingLoading && (
+                    <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                      <Skeleton className="h-8 w-full rounded" />
+                    </div>
+                  )}
+                  {recordingError && (
+                    <p className="text-[13px] text-muted-foreground">Recording unavailable.</p>
+                  )}
+                  {recordingUrl && (
+                    <audio controls className="w-full h-8" src={recordingUrl} preload="none" />
+                  )}
                   <Separator />
-                  <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+                  <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 220px)' }}>
                     {interactionDetail?.full_transcript || 'No transcript available.'}
                   </div>
                 </>
@@ -378,7 +450,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                     <Skeleton className="h-8 w-full" />
                     <Skeleton className="h-8 w-3/4" />
                   </div>
-                ) : interactions.length === 0 ? (
+                ) : !interactions?.length ? (
                   <p className="text-[13px] text-muted-foreground py-2">No interactions recorded.</p>
                 ) : (
                   <table className="w-full text-[13px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
@@ -438,7 +510,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                     <Skeleton className="h-8 w-full" />
                     <Skeleton className="h-8 w-full" />
                   </div>
-                ) : jobHistory.length === 0 ? (
+                ) : !jobHistory?.length ? (
                   <p className="text-[13px] text-muted-foreground py-2">No job history found.</p>
                 ) : (
                   <table className="w-full text-[13px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
