@@ -233,10 +233,27 @@ attribution.
 - Fallback: `opportunity.campaign → lkp_campaign` (for Quinn paid forms
   where WC has no record but the email carries the gad_campaignid)
 
-### Classification Fields (all NULL — populated later)
-`disposition`, `loss_reason`, `csr_quality`, `quotable`, `lead_class`,
-`confidence`, `reasoning`, `needs_review`. Populated by 836-import + AI +
-Firestore overrides at read time.
+### Funnel Stage Taxonomy — Two Workstreams
+
+**DATA-DRIVEN (this build, objective, no human judgment):**
+- Not Captured (dropped/missed/unanswered — `raw_calls.answered`)
+- Captured (answered AND ≥20s)
+- Booked (tied to ≥1 AroFlo job; clustering-aware: one opp = one booking,
+  not one per jobnumber)
+- Completed (Archived+Completed+invoiced>0) + revenue (cluster-summed)
+- Revenue vs spend / ROAS per paid segment (`vw_economics`)
+
+**QUALITATIVE (separate workstream — physical review now, AI review later;
+NOT this build):**
+- `quotable`, `loss_reason` (DNP), `csr_quality`, `disposition`, `lead_class`
+- All NULL in `vw_lead_enriched` — populated by 836-import + AI + Firestore
+  overrides at read time
+- No rate that divides by a qualitative field (e.g. booking-rate-vs-quotable)
+  can be computed until that workstream lands
+- Report objective stages as COUNTS, not rates-against-qualified
+- The discussion paper's booking/conversion rates use a qualitative 'quotable'
+  denominator and CANNOT be reconciled by this build — that comparison waits
+  for the classification workstream
 
 ## §10 Known Attribution Gaps (Website-Side)
 
@@ -272,11 +289,23 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 - **329 completed COD jobs reconcile exactly** to AroFlo truth
   (311 distinct completed opportunities covering 326 in-window + 3 pre-window)
 
-### Quinn ROAS — PROVISIONAL
+### Email Form Ingestion Impact — SETTLED
+- 20 genuinely-new opportunities from email forms (no prior call/WC/job)
+- +19 net baseline delta (20 new − 1 merge from email bridging)
+- 25 former no-inbound job-opps reclassified to form-first (not new opps)
+- Tier-1 detection: clean, no false positives (tawk/mrwasher excluded by
+  sender allowlist + RE: filter)
+
+### Quinn ROAS — SETTLED
 - Quinn-Suburb/Quinn-Smart total attributed: 155 opportunities (Feb–May)
-- ROAS undercount from WC-blind paid forms: +3% overall, +13% May
-- **PROVISIONAL** — pending three reconciliation queries (see §12 OPEN items)
-- This is a floor and rising as Quinn pages expand to Plumbing
+- Quinn ROAS adjustment from email form parsing: **+4 opps** (May 2026,
+  all Plumbing/Smart — campaigns where WC call tracking wasn't yet capturing
+  form-only visitors). For Feb–Apr, 28/28 paid Quinn forms merged into opps
+  that WC had already attributed to the same Quinn campaign via the phone
+  call. The form email is a forward-looking safety net, not a historical
+  correction.
+- "0/21 in WC" = no WC form record (customer often in WC via their call).
+  28 of 33 Quinn-form-containing opps already had Quinn attribution from WC.
 
 ### Answer Rate vs Capture Rate (Dec–May, call-type opps)
 - Answered (PBX connected): 94.0%
@@ -308,15 +337,10 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 - [ ] Classification phase: disposition, loss_reason, csr_quality from
       836-import + AI + Firestore overrides
 
-### OPEN (settle at start of economics phase)
-Three reconciliations from the form ingestion report:
-- (a) Tie out net-new counts: 58 form-first opps vs +19 baseline delta vs
-      59 net-new spine events vs 4 Quinn-paid-first — clarify which is which
-- (b) Verify Tier 1 has no false positives (tawk live-chat / jobs@mrwasher
-      internal appearing as Quinn PAID). Tighten Tier 1 to require
-      gad_campaignid resolving in lkp_campaign if needed.
-- (c) Resolve "0/21 in WC" vs "28/32 merged into WC-Quinn opps" wording
-      and restate the real ROAS uplift accurately.
+### SETTLED (economics phase prerequisites)
+- [x] Net-new counts tied out: 20 genuinely new, +19 baseline, ±1 from merge
+- [x] Tier-1 false positive check: clean (tawk excluded by sender list)
+- [x] Quinn ROAS wording: +4 real uplift, 28/28 Feb–Apr already WC-attributed
 
 ## §13 Key Files
 
