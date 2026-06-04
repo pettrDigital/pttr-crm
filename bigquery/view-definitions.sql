@@ -1849,3 +1849,86 @@ SELECT
   talk_time
 FROM call_with_wc
 WHERE wc_rank = 1 OR wc_lead_id IS NULL;
+
+-- View: ds_crm.vw_opportunities
+CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
+WITH
+real_calls AS (
+  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 10
+),
+
+with_gap AS (
+  SELECT *,
+    CASE
+      WHEN LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp) IS NULL THEN TRUE
+      WHEN TIMESTAMP_DIFF(lead_timestamp,
+        LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp), DAY) > 30 THEN TRUE
+      ELSE FALSE
+    END AS is_opp_start
+  FROM real_calls
+),
+
+with_opp_id AS (
+  SELECT *,
+    SUM(CASE WHEN is_opp_start THEN 1 ELSE 0 END)
+      OVER (PARTITION BY phone ORDER BY lead_timestamp ROWS UNBOUNDED PRECEDING) AS opp_seq
+  FROM with_gap
+),
+
+-- One row per call, tagged with first-call attribution via FIRST_VALUE
+tagged AS (
+  SELECT
+    phone,
+    opp_seq,
+    lead_timestamp,
+    FIRST_VALUE(lead_id) OVER w AS opportunity_id,
+    FIRST_VALUE(is_business_hours) OVER w AS is_business_hours,
+    FIRST_VALUE(attribution_source) OVER w AS attribution_source,
+    FIRST_VALUE(channel) OVER w AS channel,
+    FIRST_VALUE(source) OVER w AS source,
+    FIRST_VALUE(medium) OVER w AS medium,
+    FIRST_VALUE(campaign) OVER w AS campaign,
+    FIRST_VALUE(keyword) OVER w AS keyword,
+    FIRST_VALUE(profile) OVER w AS profile,
+    FIRST_VALUE(wc_lead_id) OVER w AS wc_lead_id,
+    FIRST_VALUE(direct_subtype) OVER w AS direct_subtype,
+    FIRST_VALUE(queue_ext) OVER w AS queue_ext,
+    FIRST_VALUE(queue_name) OVER w AS queue_name,
+    duration_sec
+  FROM with_opp_id
+  WINDOW w AS (PARTITION BY phone, opp_seq ORDER BY lead_timestamp)
+),
+
+-- Aggregate to one row per opportunity
+agg AS (
+  SELECT
+    opportunity_id,
+    phone,
+    MIN(lead_timestamp) AS opportunity_timestamp,
+    MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
+    ANY_VALUE(is_business_hours) AS is_business_hours,
+    ANY_VALUE(attribution_source) AS attribution_source,
+    ANY_VALUE(channel) AS channel,
+    ANY_VALUE(source) AS source,
+    ANY_VALUE(medium) AS medium,
+    ANY_VALUE(campaign) AS campaign,
+    ANY_VALUE(keyword) AS keyword,
+    ANY_VALUE(profile) AS profile,
+    ANY_VALUE(wc_lead_id) AS wc_lead_id,
+    ANY_VALUE(direct_subtype) AS direct_subtype,
+    ANY_VALUE(queue_ext) AS queue_ext,
+    ANY_VALUE(queue_name) AS queue_name,
+    COUNT(*) AS call_count,
+    MAX(duration_sec) AS max_duration_sec
+  FROM tagged
+  GROUP BY opportunity_id, phone
+)
+
+SELECT
+  a.*,
+  EXISTS(
+    SELECT 1 FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    WHERE (tc.norm_client_mobile = a.phone OR tc.id_phone = a.phone)
+      AND tc.requested_date_parsed < DATE(a.opportunity_timestamp_sydney)
+  ) AS is_existing_customer
+FROM agg a;
