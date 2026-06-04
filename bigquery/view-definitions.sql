@@ -1,5 +1,5 @@
 -- BigQuery View Definitions
--- Updated: 2026-06-04T13:15:10.390Z
+-- Updated: 2026-06-04T13:23:43.089Z
 
 -- View: ds_crm.vw_account_locations
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_account_locations` AS
@@ -975,6 +975,7 @@ SELECT call_id AS lead_id, 'call' AS source_type, norm_caller_phone AS phone,
   wc_campaign AS campaign, wc_keyword AS keyword, wc_profile AS profile,
   wc_tracking_number AS tracking_number,
   CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
+  CASE WHEN duration_sec = 0 THEN 'missed' WHEN duration_sec < 20 THEN 'dropped' ELSE 'connected' END AS call_outcome,
   answered, missed, talk_time
 FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL;
 
@@ -982,7 +983,7 @@ FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL;
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
 WITH
 real_calls AS (
-  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 20
+  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE call_outcome = 'connected'
 ),
 
 -- Match calls to AroFlo jobs (phone + time window)
