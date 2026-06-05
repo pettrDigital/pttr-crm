@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { FunnelStageBadge } from '@/components/shared/status-badge'
-import { addLeadNote } from '@/lib/firebase/firestore'
+import { LeadClassification } from '@/components/leads/lead-classification'
 import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
 import { authFetch } from '@/lib/auth/auth-fetch'
 import { ArrowLeft, ChevronDown, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
@@ -136,6 +136,10 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
   const [jobHistoryLoading, setJobHistoryLoading] = useState(false)
   const [speedToLead, setSpeedToLead] = useState<number | null>(null)
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [notes, setNotes] = useState<any[]>([])
+  const [notesLoading, setNotesLoading] = useState(false)
+
   const [selectedInteraction, setSelectedInteraction] = useState<LeadInteraction | null>(null)
   const [interactionDetail, setInteractionDetail] = useState<InteractionDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -179,8 +183,17 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
       setJobHistoryLoading(false)
     }
 
+    async function fetchNotes() {
+      setNotesLoading(true)
+      const res = await authFetch(`/api/leads/${lead!.lead_id}/notes`)
+      const raw = await res.json()
+      setNotes(Array.isArray(raw) ? raw : [])
+      setNotesLoading(false)
+    }
+
     fetchDetail()
     fetchJobHistory()
+    fetchNotes()
   }, [lead, open])
 
   // Fetch recording: WC proxy first (100% coverage), GCS signed URL fallback
@@ -452,12 +465,8 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                 )
               })()}
 
-              {/* DNP / Sub-Status */}
-              {hasDnp(lead.dnp_reason) && (
-                <div className="px-5 py-2 border-b text-[13px]">
-                  <span className="font-medium text-red-600">Sub-Status:</span> {lead.dnp_reason}
-                </div>
-              )}
+              {/* Classification */}
+              <LeadClassification lead={lead} />
 
               {/* Interaction Timeline */}
               <div className="px-5 py-3">
@@ -576,36 +585,64 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
 
               <Separator />
 
-              {/* Add note — collapsible at bottom */}
+              {/* Notes — read + write */}
               <div className="px-5 py-3">
                 <button
                   className="flex items-center gap-1 text-[12px] font-semibold text-muted-foreground uppercase tracking-wider"
                   onClick={() => setNoteOpen(!noteOpen)}
                 >
                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${noteOpen ? '' : '-rotate-90'}`} />
-                  Add Note
+                  Notes {notes.length > 0 && `(${notes.length})`}
                 </button>
                 {noteOpen && (
-                  <div className="flex gap-2 mt-2">
-                    <Textarea
-                      placeholder="Write a note..."
-                      value={noteText}
-                      onChange={(e) => setNoteText(e.target.value)}
-                      className="flex-1 text-[13px]"
-                      rows={2}
-                    />
-                    <Button
-                      size="sm"
-                      disabled={!noteText.trim() || saving}
-                      onClick={async () => {
-                        setSaving(true)
-                        await addLeadNote(lead.lead_id, noteText.trim(), 'admin')
-                        setNoteText('')
-                        setSaving(false)
-                      }}
-                    >
-                      {saving ? 'Saving...' : 'Save'}
-                    </Button>
+                  <div className="mt-2 space-y-2">
+                    {/* Existing notes */}
+                    {notesLoading ? (
+                      <p className="text-[12px] text-muted-foreground">Loading...</p>
+                    ) : notes.length > 0 ? (
+                      <div className="space-y-1.5 mb-2">
+                        {notes.map((n) => (
+                          <div key={n.id} className="text-[12px] bg-muted/40 rounded p-2">
+                            <span className="text-muted-foreground">
+                              {n.created_at?._seconds
+                                ? new Date(n.created_at._seconds * 1000).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
+                                : ''}
+                              {' · '}{n.created_by || 'admin'}
+                            </span>
+                            <div className="mt-0.5">{n.note_text}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {/* Write */}
+                    <div className="flex gap-2">
+                      <Textarea
+                        placeholder="Write a note..."
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        className="flex-1 text-[13px]"
+                        rows={2}
+                      />
+                      <Button
+                        size="sm"
+                        disabled={!noteText.trim() || saving}
+                        onClick={async () => {
+                          setSaving(true)
+                          await authFetch(`/api/leads/${lead.lead_id}/notes`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ note_text: noteText.trim() }),
+                          })
+                          setNoteText('')
+                          // Refresh notes
+                          const res = await authFetch(`/api/leads/${lead.lead_id}/notes`)
+                          setNotes(await res.json())
+                          setSaving(false)
+                        }}
+                      >
+                        {saving ? 'Saving...' : 'Save'}
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>
