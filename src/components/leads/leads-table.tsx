@@ -8,26 +8,30 @@ import { Input } from '@/components/ui/input'
 import { useState, useMemo } from 'react'
 import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import {
-  UserCheck, PhoneIncoming, FileText, Mail, MessageCircle,
+  UserCheck, PhoneIncoming, FileText, Mail,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
   Sprout, DollarSign, Users, Minus, Link,
 } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
+function TypeIcon({ leadType }: { leadType: string }) {
+  const t = leadType?.toLowerCase() ?? ''
+  if (t === 'call') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><PhoneIncoming className="h-3.5 w-3.5" />Call</span>
+  if (t === 'form') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Form</span>
+  if (t === 'email') return <span className="inline-flex items-center gap-1 text-[13px] text-teal-600"><Mail className="h-3.5 w-3.5" />Email</span>
+  if (t === 'direct_booking') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
+  return <span className="text-[13px] text-muted-foreground">{leadType || '—'}</span>
+}
+
 function ChannelIcon({ channel }: { channel: string }) {
   const ch = channel?.toLowerCase() ?? ''
-  if (ch.includes('call') || ch.includes('phone')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><PhoneIncoming className="h-3.5 w-3.5" />Call</span>
-  }
-  if (ch.includes('form') || ch.includes('web')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Form</span>
-  }
-  if (ch.includes('email')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-teal-600"><Mail className="h-3.5 w-3.5" />Email</span>
-  }
-  if (ch.includes('chat')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><MessageCircle className="h-3.5 w-3.5" />Chat</span>
-  }
+  if (ch.includes('direct') && ch.includes('untracked')) return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
+  if (ch.includes('direct') && ch.includes('booking')) return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><ArrowRight className="h-3.5 w-3.5" />Direct Booking</span>
+  if (ch === 'call') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />Paid/Organic</span>
+  if (ch === 'form') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Globe className="h-3.5 w-3.5" />WC Form</span>
+  if (ch.includes('paid') && ch.includes('quinn')) return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />Quinn Paid</span>
+  if (ch.includes('organic') && ch.includes('landing')) return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />Quinn Organic</span>
+  if (ch.includes('website') && ch.includes('form')) return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Website Form</span>
   return <span className="text-[13px] text-muted-foreground">{channel || '—'}</span>
 }
 
@@ -45,7 +49,7 @@ function SourceIcon({ source }: { source: string }) {
   if (!source) return <span className="text-muted-foreground">—</span>
   const s = source.toLowerCase()
 
-  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-orange-600"><Search className="h-3.5 w-3.5" />{source}</span>
+  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
   if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><MapPin className="h-3.5 w-3.5" />{source}</span>
   if (s === '(direct)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
 
@@ -72,7 +76,7 @@ function MediumIcon({ medium }: { medium: string }) {
   const m = medium.toLowerCase()
 
   if (m === 'organic') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />{medium}</span>
-  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-orange-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
+  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
   if (m === 'referral') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Users className="h-3.5 w-3.5" />{medium}</span>
   if (m === '(none)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Minus className="h-3.5 w-3.5" />None</span>
   // Fallback
@@ -136,7 +140,12 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
         )
       },
     },
-    { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.dnp_reason ?? '—' },
+    { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.sub_status || row.original.dnp_reason || '—' },
+    {
+      accessorKey: 'lead_type',
+      header: 'Type',
+      cell: ({ row }) => <TypeIcon leadType={row.original.lead_type} />,
+    },
     {
       accessorKey: 'channel',
       header: 'Channel',

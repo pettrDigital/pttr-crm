@@ -64,13 +64,17 @@ function getAutoStage(lead: Lead): { stage: string; sub_status: string } {
 
 function stageColor(stage: string): string {
   switch (stage) {
-    case 'Not Captured': return 'bg-red-100 text-red-800'
-    case 'Captured': return 'bg-blue-100 text-blue-800'
+    case 'Not Captured': return 'bg-gray-100 text-gray-800'
+    case 'Captured': return 'bg-yellow-100 text-yellow-800'
     case 'Not Quotable': return 'bg-orange-100 text-orange-800'
-    case 'Not Booked': return 'bg-amber-100 text-amber-800'
+    case 'Not Booked': return 'bg-red-100 text-red-800'
     case 'Booked': return 'bg-green-100 text-green-800'
     default: return 'bg-gray-100 text-gray-800'
   }
+}
+
+function stageLabel(stage: string): string {
+  return stage === 'Captured' ? 'New Lead' : stage
 }
 
 // ─── COMPONENT ──────────────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ export function LeadClassification({ lead, onClassify }: Props) {
           Classification
         </button>
         <Badge className={`text-xs font-medium ${stageColor(effective.stage)}`}>
-          {effective.stage}
+          {stageLabel(effective.stage)}
         </Badge>
         {effective.sub_status && (
           <span className="text-[12px] text-muted-foreground">{effective.sub_status}</span>
@@ -167,20 +171,18 @@ export function LeadClassification({ lead, onClassify }: Props) {
                 }`}
                 onClick={() => {
                   if (stage === auto.stage) {
-                    // Clicking auto stage = clear override
                     if (isOverridden) {
                       save(auto.stage, auto.sub_status)
                       setOverride(null)
                     }
                   } else if (stage === 'Captured') {
-                    // Can't manually set to Captured — it's an auto state
                     return
                   } else {
                     save(stage, '')
                   }
                 }}
               >
-                {stage}
+                {stageLabel(stage)}
                 {stage === auto.stage && !isOverridden ? ' ●' : ''}
               </button>
             ))}
@@ -190,7 +192,7 @@ export function LeadClassification({ lead, onClassify }: Props) {
           <div>
             <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Sub-status</div>
             {effective.stage === 'Captured' ? (
-              <p className="text-[12px] text-muted-foreground italic">Awaiting classification — select Not Quotable or Not Booked above</p>
+              <p className="text-[12px] text-muted-foreground italic">New Lead — select Not Quotable or Not Booked above to classify</p>
             ) : (
             <div className="flex flex-wrap gap-1">
               {(STAGES[effective.stage as StageName]?.subStatuses || []).map(ss => {
@@ -259,7 +261,7 @@ export function LeadClassification({ lead, onClassify }: Props) {
           {/* Baseline vs override indicator */}
           {isOverridden && (
             <div className="text-[11px] text-muted-foreground border-t pt-2 mt-1">
-              Auto baseline: <span className="font-medium">{auto.stage}</span>
+              Auto baseline: <span className="font-medium">{stageLabel(auto.stage)}</span>
               {auto.sub_status && <> / {auto.sub_status}</>}
               {' · '}
               <button
