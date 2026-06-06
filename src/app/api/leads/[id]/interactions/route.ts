@@ -26,10 +26,11 @@ export async function GET(
     const phones = (oppData.matched_phones as string || '').split(',').map((p: string) => p.trim()).filter(Boolean)
     const wc_lead_id = oppData.wc_lead_id
 
-    // Two-source interaction query:
+    // Three-source interaction query:
     // 1. lead_interactions by wc_lead_id (if exists)
     // 2. raw_calls by matched_phones (for direct/untracked)
-    // UNION and dedupe by call_id
+    // 3. email reply threads by conversation_id (RE:/FW: on form threads)
+    // UNION and dedupe
     const rows = await query(`
       WITH
       -- Source 1: WC-linked interactions via lead_interactions
@@ -130,12 +131,46 @@ export async function GET(
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
-      -- Combine + dedupe by call_id (prefer WC-linked if both exist)
+      -- Source 3: email reply threads (RE:/FW: on form conversation threads)
+      email_thread_replies AS (
+        SELECT
+          reply.message_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          CASE
+            WHEN reply.from_email LIKE '%@mrwasher%' OR reply.from_email LIKE '%plumber%' OR reply.from_email LIKE '%electrician%'
+              THEN 'Outbound Email'
+            ELSE 'Inbound Email'
+          END AS interaction_type,
+          DATETIME(reply.received_at, 'Australia/Sydney') AS interaction_datetime,
+          DATE(DATETIME(reply.received_at, 'Australia/Sydney')) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', DATETIME(reply.received_at, 'Australia/Sydney')) AS interaction_time,
+          reply.from_name AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(reply.subject, reply.body_preview, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id
+        FROM \`${DS}.raw_emails_received\` reply
+        JOIN (
+          -- Find conversation_ids of the original email forms for this opp
+          SELECT DISTINCT orig.conversation_id
+          FROM \`${DS}.vw_leads_unified\` lu
+          JOIN \`${DS}.raw_emails_received\` orig ON CONCAT('email-', orig.message_id) = lu.lead_id
+          WHERE lu.source_type = 'email'
+            AND (lu.phone IN UNNEST(@phones) OR lu.phone IS NULL)
+            AND lu.lead_timestamp BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ) thread ON reply.conversation_id = thread.conversation_id
+        WHERE (reply.subject LIKE 'RE:%' OR reply.subject LIKE 'Re:%'
+          OR reply.subject LIKE 'FW:%' OR reply.subject LIKE 'Fw:%')
+      ),
+      -- Combine + dedupe (prefer WC-linked, then calls, then email threads)
       combined AS (
         SELECT * FROM wc_interactions
         UNION ALL
         SELECT * FROM phone_calls pc
         WHERE pc.call_id NOT IN (SELECT call_id FROM wc_interactions WHERE call_id IS NOT NULL)
+        UNION ALL
+        SELECT * FROM email_thread_replies
       )
       SELECT interaction_id, lead_id, interaction_type, interaction_datetime,
         interaction_date, interaction_time, interaction_operator,

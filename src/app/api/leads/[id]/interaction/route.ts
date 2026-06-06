@@ -74,22 +74,40 @@ export async function GET(
       return Response.json(rows.length > 0 ? JSON.parse(JSON.stringify(rows[0])) : null)
     }
 
-    if (type === 'email' && datetime) {
-      // Email detail — lookup by lead_id (from lead_interactions) + datetime
-      const rows = await query(`
-        SELECT
-          li.contact_datetime_sydney AS submitted_at,
-          li.contact_from AS from_address,
-          li.contact_to AS to_address,
-          li.contact_subject AS subject,
-          li.contact_content AS email_body
-        FROM \`${DS}.lead_interactions\` li
-        WHERE li.contact_datetime_sydney = @datetime
-          AND li.contact_type != 'Phone'
-        LIMIT 1
-      `, { datetime })
-
-      return Response.json(rows.length > 0 ? JSON.parse(JSON.stringify(rows[0])) : null)
+    if (type === 'email') {
+      const messageId = searchParams.get('call_id') // reused param name for email message_id
+      // Try raw_emails_received first (for reply-thread emails + form originals)
+      if (messageId) {
+        const rows = await query(`
+          SELECT
+            DATETIME(received_at, 'Australia/Sydney') AS submitted_at,
+            from_email AS from_address,
+            to_email AS to_address,
+            subject,
+            COALESCE(body_text, body_preview) AS email_body
+          FROM \`${DS}.raw_emails_received\`
+          WHERE message_id = @messageId
+          LIMIT 1
+        `, { messageId })
+        if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+      }
+      // Fallback: lead_interactions by datetime
+      if (datetime) {
+        const rows = await query(`
+          SELECT
+            li.contact_datetime_sydney AS submitted_at,
+            li.contact_from AS from_address,
+            li.contact_to AS to_address,
+            li.contact_subject AS subject,
+            li.contact_content AS email_body
+          FROM \`${DS}.lead_interactions\` li
+          WHERE li.contact_datetime_sydney = @datetime
+            AND li.contact_type != 'Phone'
+          LIMIT 1
+        `, { datetime })
+        return Response.json(rows.length > 0 ? JSON.parse(JSON.stringify(rows[0])) : null)
+      }
+      return Response.json(null)
     }
 
     return Response.json(null)
