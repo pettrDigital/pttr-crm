@@ -46,8 +46,12 @@ SELECT
   o.is_existing_customer,
   o.is_no_inbound_enquiry,
 
-  -- Suburb (from WC city field)
-  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), '')) AS suburb,
+  -- Suburb (WC city → AroFlo suburb → form-parsed suburb)
+  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), ''), ef.form_suburb) AS suburb,
+
+  -- Form-specific fields (email-parsed forms only)
+  ef.form_address,
+  ef.form_problem,
 
   -- === Attribution ===
   o.channel,
@@ -163,4 +167,15 @@ LEFT JOIN (
   FROM `pttr-taskdata.ds_crm.raw_recordings`
   WHERE operator_name IS NOT NULL AND operator_name != ''
   GROUP BY call_id
-) first_rec ON first_rc.call_id = first_rec.call_id;
+) first_rec ON first_rc.call_id = first_rec.call_id
+-- Email-form fields (form_suburb, form_address, form_problem)
+-- Email-form fields (form_suburb, form_address, form_problem) — one per opp
+LEFT JOIN (
+  SELECT phone, lead_timestamp, form_suburb, form_address, form_problem,
+    ROW_NUMBER() OVER (PARTITION BY phone ORDER BY lead_timestamp) AS rn
+  FROM `pttr-taskdata.ds_crm.vw_leads_unified`
+  WHERE source_type = 'email'
+    AND (form_suburb IS NOT NULL OR form_address IS NOT NULL OR form_problem IS NOT NULL)
+) ef ON ef.phone = o.phone
+  AND ABS(TIMESTAMP_DIFF(ef.lead_timestamp, o.opportunity_timestamp, SECOND)) < 2592000
+  AND ef.rn = 1;

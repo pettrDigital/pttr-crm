@@ -96,7 +96,10 @@ call_rows AS (
     CASE WHEN duration_sec = 0 THEN 'missed' WHEN duration_sec < 20 THEN 'dropped' ELSE 'connected' END AS call_outcome,
     answered, missed, talk_time,
     wc_contact_name AS contact_name,
-    wc_email AS email
+    wc_email AS email,
+    CAST(NULL AS STRING) AS form_suburb,
+    CAST(NULL AS STRING) AS form_address,
+    CAST(NULL AS STRING) AS form_problem
   FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL
 ),
 
@@ -120,7 +123,10 @@ form_rows AS (
     CAST(NULL AS STRING) AS direct_subtype,
     'form_submit' AS call_outcome,
     CAST(NULL AS STRING) AS answered, CAST(NULL AS STRING) AS missed, CAST(NULL AS STRING) AS talk_time,
-    contact_name, email
+    contact_name, email,
+    CAST(NULL AS STRING) AS form_suburb,
+    CAST(NULL AS STRING) AS form_address,
+    CAST(NULL AS STRING) AS form_problem
   FROM `pttr-taskdata.ds_crm.vw_leads` WHERE channel = 'Form'
 ),
 
@@ -311,7 +317,10 @@ email_rows AS (
     CAST(NULL AS STRING) AS missed,
     CAST(NULL AS STRING) AS talk_time,
     INITCAP(TRIM(raw_name)) AS contact_name,
-    extracted_email AS email
+    extracted_email AS email,
+    form_suburb,
+    form_address,
+    form_problem
   FROM email_form_parsed
 )
 
