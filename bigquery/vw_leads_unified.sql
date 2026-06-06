@@ -177,23 +177,44 @@ email_form_parsed AS (
       ELSE 'wpforms'
     END AS email_tier,
 
-    -- Phone extraction (multiple patterns across tiers)
+    -- Contact name (stop at next field label: Phone/Email/Address/Suburb/My Problem/How Can)
+    TRIM(COALESCE(
+      REGEXP_EXTRACT(clean_body, r'(?i)My name is\.{0,3}\s+(.+?)(?:\s+(?:My Problem|I want|My phone|How can))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)Name\*?:?\s+(.+?)(?:\s+(?:Phone|Email|Address|Postcode|Suburb|How Can|Message|LP ))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)Name\*?:?\s+([^\n\r]{2,30})')
+    )) AS raw_name,
+
+    -- Phone extraction
     COALESCE(
-      REGEXP_EXTRACT(clean_body, r'Phone\*?:?\s*(\+?[\d\s\-\(\)]{8,15})'),
-      REGEXP_EXTRACT(clean_body, r'phone number is\.{0,3}\s*(\+?[\d\s\-\(\)]{8,15})')
+      REGEXP_EXTRACT(clean_body, r'(?i)(?:Phone\*?:?|phone number is\.{0,3})\s*(\+?[\d\s\-\(\)]{8,15})'),
+      REGEXP_EXTRACT(clean_body, r'(?i)Phone\s+(\d[\d\s\-]{7,14})')
     ) AS raw_phone,
 
     -- Email extraction
     COALESCE(
-      REGEXP_EXTRACT(LOWER(clean_body), r'Email\*?:?\s*([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})'),
-      REGEXP_EXTRACT(LOWER(clean_body), r'email is\.{0,3}\s*([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})')
+      REGEXP_EXTRACT(LOWER(clean_body), r'(?:email\*?:?|email is\.{0,3})\s*([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})'),
+      REGEXP_EXTRACT(LOWER(clean_body), r'(?:email)\s+([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})')
     ) AS extracted_email,
 
-    -- Contact name
-    COALESCE(
-      REGEXP_EXTRACT(clean_body, r'Name\*?:?\s*([^\n\r]{2,40})'),
-      REGEXP_EXTRACT(clean_body, r'My name is\.{0,3}\s*([^\n\r]{2,40})')
-    ) AS raw_name,
+    -- Address / suburb
+    TRIM(COALESCE(
+      REGEXP_EXTRACT(clean_body, r'(?i)(?:My add?ress is\.{0,3}|Address\*?:?)\s+(.+?)(?:\s+(?:Sent from|My phone|My email|Postcode|LP |Page URL))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)(?:My add?ress is\.{0,3}|Address\*?:?)\s+([^\n\r]{3,60})')
+    )) AS form_address,
+
+    TRIM(COALESCE(
+      REGEXP_EXTRACT(clean_body, r'(?i)(?:LP Suburb|Suburb)\*?:?\s+([^\n\r]{2,40})'),
+      REGEXP_EXTRACT(clean_body, r'(?i)Postcode\*?:?\s+(\d{4})')
+    )) AS form_suburb,
+
+    -- Problem / message
+    TRIM(COALESCE(
+      REGEXP_EXTRACT(clean_body, r'(?i)My Problem is\.{0,3}\s+(.+?)(?:\s+(?:I want|My phone|Sent from))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)My problem is\.{0,3}\s+(.+?)(?:\s+(?:I want|My phone|Sent from))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)How Can We Help\*?:?\s+(.+?)(?:\s+(?:LP |Postcode|Page URL|suburb|service))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)Message\s+(.+?)(?:\s+(?:Page URL|hq|Call\s))'),
+      REGEXP_EXTRACT(clean_body, r'(?i)My question is\.{0,3}\s+(.+?)(?:\s+(?:My phone|Sent from))')
+    )) AS form_problem,
 
     -- Quinn attribution fields
     REGEXP_EXTRACT(body_text, r'gad_campaignid=(\d+)') AS gad_campaignid,

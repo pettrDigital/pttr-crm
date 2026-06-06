@@ -26,7 +26,8 @@ SELECT
 
   CASE
     WHEN o.opp_type = 'no_inbound' THEN 'direct_booking'
-    WHEN o.channel = 'Form' THEN 'form'
+    WHEN o.channel IN ('Form', 'Website Form', 'Paid Search (Quinn LP)', 'Organic - Landing Page') THEN 'form'
+    WHEN o.form_count > 0 AND o.call_count = 0 THEN 'form'
     ELSE 'call'
   END AS lead_type,
 
