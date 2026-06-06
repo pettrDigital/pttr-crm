@@ -11,7 +11,7 @@ export async function POST(
 
   try {
     const body = await request.json()
-    const { stage, sub_status, loss_reason, note } = body
+    const { stage, sub_status, loss_reason, note, exclude_from_analysis } = body
 
     if (!stage || !sub_status) {
       return Response.json({ error: 'stage and sub_status required' }, { status: 400 })
@@ -23,6 +23,7 @@ export async function POST(
       sub_status,
       loss_reason: loss_reason || null,
       note: note || null,
+      exclude_from_analysis: exclude_from_analysis || false,
       updated_by: 'admin',
       updated_at: new Date(),
     })

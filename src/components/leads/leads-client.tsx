@@ -30,14 +30,15 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
 
   // Called when a classification is saved in the detail sheet
   const handleClassify = useCallback((opportunityId: string, stage: string, subStatus: string) => {
+    const excludeFromAnalysis = subStatus === 'Unable to Classify'
     setLeads(prev => prev.map(l =>
       l.lead_id === opportunityId
-        ? { ...l, funnel_stage: stage, sub_status: subStatus, is_overridden: true }
+        ? { ...l, funnel_stage: stage, sub_status: subStatus, is_overridden: true, exclude_from_analysis: excludeFromAnalysis }
         : l
     ))
     setSelectedLead(prev =>
       prev && prev.lead_id === opportunityId
-        ? { ...prev, funnel_stage: stage, sub_status: subStatus, is_overridden: true }
+        ? { ...prev, funnel_stage: stage, sub_status: subStatus, is_overridden: true, exclude_from_analysis: excludeFromAnalysis }
         : prev
     )
   }, [])

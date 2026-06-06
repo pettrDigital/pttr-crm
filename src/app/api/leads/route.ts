@@ -26,17 +26,27 @@ export async function GET(request: Request) {
     }
   }
 
-  // Merge: override wins for funnel_stage, adds sub_status/loss_reason/is_overridden
+  // Merge: override wins for stage/sub_status UNLESS objective facts override.
+  // Objective auto-classify beats "Unable to Classify": if BQ says Booked/Completed,
+  // the human verdict doesn't hold — the lead auto-flips and exclude_from_analysis clears.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const merged = (leads as any[]).map((lead) => {
     const ov = overrideMap[lead.lead_id as string]
-    if (!ov) return { ...lead, is_overridden: false }
+    if (!ov) return { ...lead, is_overridden: false, exclude_from_analysis: false }
+
+    // Objective facts win: if BQ says Booked or Paid Job, ignore the override
+    const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
+    if (objectiveWins && ov.sub_status === 'Unable to Classify') {
+      return { ...lead, is_overridden: false, exclude_from_analysis: false }
+    }
+
     return {
       ...lead,
       funnel_stage: ov.stage as string,
       sub_status: ov.sub_status as string,
       loss_reason: ov.loss_reason || null,
       is_overridden: true,
+      exclude_from_analysis: ov.exclude_from_analysis || false,
     }
   })
 

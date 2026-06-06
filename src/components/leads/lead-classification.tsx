@@ -12,6 +12,7 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
     subStatuses: [
       { label: 'Dropped Call', autoKey: 'dropped' },
       { label: 'Unanswered Call', autoKey: 'unanswered' },
+      { label: 'Unable to Classify' },
     ],
   },
   {
@@ -117,12 +118,18 @@ export function LeadClassification({ lead, onClassify }: Props) {
   }, [lead.lead_id])
 
   async function classify(stage: string, subStatus: string, lossReason?: string | null, note?: string | null) {
+    const excludeFromAnalysis = subStatus === 'Unable to Classify'
     setSaving(true)
     try {
       await authFetch(`/api/leads/${lead.lead_id}/classify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stage, sub_status: subStatus, loss_reason: lossReason || effective.loss_reason, note: note ?? effective.note }),
+        body: JSON.stringify({
+          stage, sub_status: subStatus,
+          loss_reason: lossReason || effective.loss_reason,
+          note: note ?? effective.note,
+          exclude_from_analysis: excludeFromAnalysis,
+        }),
       })
       setOverride({ stage, sub_status: subStatus, loss_reason: lossReason || effective.loss_reason, note: note ?? effective.note })
       onClassify?.(lead.lead_id, stage, subStatus)

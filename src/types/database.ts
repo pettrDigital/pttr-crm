@@ -80,6 +80,7 @@ export interface Lead {
   is_overridden?: boolean
   sub_status?: string | null
   loss_reason?: string | null
+  exclude_from_analysis?: boolean
 }
 
 export interface LeadInteraction {
