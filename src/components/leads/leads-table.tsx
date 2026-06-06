@@ -16,10 +16,10 @@ import type { Lead } from '@/types/database'
 
 function TypeIcon({ leadType }: { leadType: string }) {
   const t = leadType?.toLowerCase() ?? ''
-  if (t === 'call') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><PhoneIncoming className="h-3.5 w-3.5" />Call</span>
-  if (t === 'form') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Form</span>
-  if (t === 'email') return <span className="inline-flex items-center gap-1 text-[13px] text-teal-600"><Mail className="h-3.5 w-3.5" />Email</span>
-  if (t === 'direct_booking') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
+  if (t === 'call') return <span className="inline-flex items-center gap-1 text-[13px]"><PhoneIncoming className="h-3.5 w-3.5 text-blue-500" /><span className="text-foreground">Call</span></span>
+  if (t === 'form') return <span className="inline-flex items-center gap-1 text-[13px]"><FileText className="h-3.5 w-3.5 text-purple-500" /><span className="text-foreground">Form</span></span>
+  if (t === 'email') return <span className="inline-flex items-center gap-1 text-[13px]"><Mail className="h-3.5 w-3.5 text-teal-500" /><span className="text-foreground">Email</span></span>
+  if (t === 'direct_booking') return <span className="inline-flex items-center gap-1 text-[13px]"><ArrowRight className="h-3.5 w-3.5 text-green-500" /><span className="text-foreground">Direct</span></span>
   return <span className="text-[13px] text-muted-foreground">{leadType || '—'}</span>
 }
 
@@ -59,10 +59,10 @@ function SourceMedium({ source, medium }: { source: string; medium: string }) {
 
 function ProfileIcon({ profile }: { profile: string }) {
   if (profile.toLowerCase().includes('plumber')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Droplet className="h-3.5 w-3.5" />PTTR</span>
+    return <span className="inline-flex items-center gap-1 text-[13px]"><Droplet className="h-3.5 w-3.5 text-sky-500" /><span className="text-foreground">PTTR</span></span>
   }
   if (profile.toLowerCase().includes('electr')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-amber-600"><Zap className="h-3.5 w-3.5" />ETTR</span>
+    return <span className="inline-flex items-center gap-1 text-[13px]"><Zap className="h-3.5 w-3.5 text-amber-500" /><span className="text-foreground">ETTR</span></span>
   }
   return <span className="text-[13px] text-muted-foreground">{profile}</span>
 }
@@ -119,7 +119,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       accessorKey: 'lead_id',
       header: 'ID',
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="text-[12px] font-mono">{formatOpportunityLabel(row.original)}</span>,
+      cell: ({ row }) => <span className="text-[12px] font-[family-name:var(--font-mono)] text-muted-foreground">{formatOpportunityLabel(row.original)}</span>,
     },
     {
       accessorKey: 'funnel_stage',
@@ -148,7 +148,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       cell: ({ row }) => row.original.profile ? <ProfileIcon profile={row.original.profile} /> : '—',
     },
     { accessorKey: 'contact_name', header: 'Contact' },
-    { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => formatPhone(row.original.phone_norm) },
+    { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => <span className="font-[family-name:var(--font-mono)] text-[12px]">{formatPhone(row.original.phone_norm)}</span> },
     {
       accessorKey: 'business_hours_flag',
       header: 'AH',
@@ -171,7 +171,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       accessorKey: 'job_value',
       header: 'Value',
       enableColumnFilter: false,
-      cell: ({ row }) => formatCurrency(row.original.job_value),
+      cell: ({ row }) => <span className="font-[family-name:var(--font-mono)] text-[12px]">{formatCurrency(row.original.job_value)}</span>,
     },
   ]
 
@@ -216,6 +216,10 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
           {needsReviewCount}
         </span>
       </button>
+      <span className="text-[10px] text-muted-foreground/60 inline-flex items-center gap-3 ml-auto">
+        <span className="inline-flex items-center gap-1"><CircleDot className="h-2.5 w-2.5 text-amber-500" />Needs review</span>
+        <span className="inline-flex items-center gap-1"><UserCheck className="h-2.5 w-2.5 text-green-600" />Existing customer</span>
+      </span>
     </div>
   )
 
