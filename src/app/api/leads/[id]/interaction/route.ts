@@ -110,6 +110,69 @@ export async function GET(
       return Response.json(null)
     }
 
+    if (type === 'form') {
+      // Form detail — WC form or email-parsed form
+      const formId = callId // interaction_id passed as call_id param
+      if (formId?.startsWith('wc-form-')) {
+        const wcId = formId.replace('wc-form-', '')
+        const rows = await query(`
+          SELECT
+            date_created_sydney AS submitted_at,
+            'Form Submission' AS subject,
+            contact_name, contact_phone_number AS phone, contact_email_address AS email_address,
+            city, state, country,
+            form_my_name, form_my_phone, form_my_email, form_my_address, form_my_problem,
+            form_service_type, form_date, form_time, form_book_a_job,
+            lead_source, lead_medium, lead_keyword, landing_url, lead_url
+          FROM \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\`
+          WHERE lead_id = @wcId
+          LIMIT 1
+        `, { wcId: Number(wcId) })
+        if (rows.length > 0) {
+          const r = rows[0] as Record<string, unknown>
+          // Build a readable form body from the fields
+          const fields = [
+            r.form_my_name || r.contact_name ? `Name: ${r.form_my_name || r.contact_name}` : null,
+            r.form_my_phone || r.phone ? `Phone: ${r.form_my_phone || r.phone}` : null,
+            r.form_my_email || r.email_address ? `Email: ${r.form_my_email || r.email_address}` : null,
+            r.form_my_address ? `Address: ${r.form_my_address}` : null,
+            r.city ? `Suburb: ${r.city}${r.state ? `, ${r.state}` : ''}${r.country && r.country !== 'AU' && r.country !== 'Australia' ? ` (${r.country})` : ''}` : null,
+            r.form_my_problem ? `\nProblem:\n${r.form_my_problem}` : null,
+            r.form_service_type && r.form_service_type !== 'Select One' ? `Service Type: ${r.form_service_type}` : null,
+            r.form_date ? `Requested Date: ${r.form_date}${r.form_time ? ` ${r.form_time}` : ''}` : null,
+            r.form_book_a_job ? `Intent: ${r.form_book_a_job}` : null,
+            r.lead_source ? `\nSource: ${r.lead_source} / ${r.lead_medium || '(none)'}` : null,
+            r.lead_keyword ? `Keyword: ${r.lead_keyword}` : null,
+            r.lead_url ? `Page: ${r.lead_url}` : null,
+          ].filter(Boolean).join('\n')
+          return Response.json(JSON.parse(JSON.stringify({
+            submitted_at: r.submitted_at,
+            subject: 'Form Submission',
+            from_address: String(r.lead_url || 'Website'),
+            to_address: 'jobs@mrwasher.com.au',
+            email_body: fields,
+          })))
+        }
+      }
+      // Email-parsed form
+      if (formId?.startsWith('email-')) {
+        const messageId = formId.replace('email-', '')
+        const rows = await query(`
+          SELECT
+            DATETIME(received_at, 'Australia/Sydney') AS submitted_at,
+            subject,
+            from_email AS from_address,
+            to_email AS to_address,
+            COALESCE(body_text, body_preview) AS email_body
+          FROM \`${DS}.raw_emails_received\`
+          WHERE message_id = @messageId
+          LIMIT 1
+        `, { messageId })
+        if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+      }
+      return Response.json(null)
+    }
+
     return Response.json(null)
   } catch (error) {
     console.error('Interaction detail error:', error)

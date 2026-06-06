@@ -163,12 +163,53 @@ export async function GET(
         WHERE (reply.subject LIKE 'RE:%' OR reply.subject LIKE 'Re:%'
           OR reply.subject LIKE 'FW:%' OR reply.subject LIKE 'Fw:%')
       ),
-      -- Combine + dedupe (prefer WC-linked, then calls, then email threads)
+      -- Source 4: form submissions as interactions (WC forms + email-parsed forms)
+      form_submissions AS (
+        -- WC form submission
+        SELECT
+          CONCAT('wc-form-', CAST(wc.lead_id AS STRING)) AS interaction_id,
+          wc.lead_id AS lead_id,
+          'Form Submission' AS interaction_type,
+          wc.date_created_sydney AS interaction_datetime,
+          DATE(wc.date_created_sydney) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', wc.date_created_sydney) AS interaction_time,
+          'Website' AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(wc.form_my_problem, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id
+        FROM \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` wc
+        WHERE wc.lead_id = @wcLeadId AND @wcLeadId IS NOT NULL
+          AND wc.lead_type = 'Web Form'
+
+        UNION ALL
+
+        -- Email-parsed form submission
+        SELECT
+          lu.lead_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          'Form Submission' AS interaction_type,
+          lu.lead_timestamp_sydney AS interaction_datetime,
+          DATE(lu.lead_timestamp_sydney) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', lu.lead_timestamp_sydney) AS interaction_time,
+          'Website' AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(lu.form_problem, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id
+        FROM \`${DS}.vw_leads_unified\` lu
+        WHERE lu.source_type = 'email'
+          AND lu.phone IN UNNEST(@phones)
+          AND lu.lead_timestamp BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+      ),
+      -- Combine + dedupe (prefer WC-linked, then calls, then forms, then email threads)
       combined AS (
         SELECT * FROM wc_interactions
         UNION ALL
         SELECT * FROM phone_calls pc
         WHERE pc.call_id NOT IN (SELECT call_id FROM wc_interactions WHERE call_id IS NOT NULL)
+        UNION ALL
+        SELECT * FROM form_submissions
         UNION ALL
         SELECT * FROM email_thread_replies
       )

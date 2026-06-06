@@ -46,9 +46,10 @@ interface LeadDetailModalProps {
   position?: string
 }
 
-function interactionTypeKey(type: string): 'call' | 'email' | null {
+function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
   const t = type?.toLowerCase() ?? ''
   if (t.includes('call') || t.includes('phone')) return 'call'
+  if (t.includes('form') && t.includes('submission')) return 'form'
   if (t.includes('email')) return 'email'
   return null
 }
