@@ -69,7 +69,11 @@ inbound_calls AS (
     AND rc.norm_caller_phone IS NOT NULL AND rc.norm_caller_phone != ''
     AND tn.phone_e164 IS NULL
     AND ip.phone IS NULL
-    AND COALESCE(lkp.is_internal, FALSE) = FALSE
+    -- Exclude genuinely internal DIDs (797 Tradesmen, ONA variants) but ALLOW
+    -- staff extensions (3xx) — inbound calls to a CSR are real customer calls
+    AND rc.callee != '797'
+    AND rc.callee NOT LIKE 'ONA%'
+    AND rc.callee NOT LIKE 'RingGroup%'
     AND aop.phone IS NULL  -- exclude PM/Account-only phones
 ),
 
