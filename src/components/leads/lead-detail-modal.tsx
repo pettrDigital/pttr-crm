@@ -123,7 +123,7 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
             No recording — {ix.interaction_duration_seconds}s call does not meet recording threshold
           </p>
         ) : (
-          <div className="text-[12px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+          <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
             {detail?.full_transcript || 'No transcript available.'}
           </div>
         )}
@@ -139,7 +139,7 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
         {detail?.to_address && <div>To: {detail.to_address}</div>}
         {detail?.subject && <div className="font-medium">{detail.subject}</div>}
       </div>
-      <div className="text-[12px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+      <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
         {detail?.email_body || 'No content available.'}
       </div>
     </div>
