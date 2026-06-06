@@ -323,9 +323,15 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                     <audio controls className="w-full h-8" src={recordingUrl} preload="none" />
                   )}
                   <Separator />
-                  <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 220px)' }}>
-                    {interactionDetail?.full_transcript || 'No transcript available.'}
-                  </div>
+                  {!interactionDetail?.full_transcript && !recordingUrl && !recordingLoading && (selectedInteraction.interaction_duration_seconds != null && selectedInteraction.interaction_duration_seconds < 10) ? (
+                    <p className="text-[13px] text-muted-foreground py-4">
+                      No recording or transcript available — {selectedInteraction.interaction_duration_seconds}s call duration does not meet minimum recording threshold
+                    </p>
+                  ) : (
+                    <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+                      {interactionDetail?.full_transcript || 'No transcript available.'}
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
