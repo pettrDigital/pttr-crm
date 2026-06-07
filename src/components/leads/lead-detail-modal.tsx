@@ -552,6 +552,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                         <InteractionIcon type={ix.interaction_type} />
                         <span className="tabular-nums text-muted-foreground">{formatDate(ix.interaction_date, 'd MMM')}</span>
                         <span className="tabular-nums text-muted-foreground">{ix.interaction_time || ''}</span>
+                        {ix.called_did_label && <span className="text-[11px] text-muted-foreground/70">{ix.called_did_label}</span>}
                         <span className="text-foreground">{ix.interaction_operator || ''}</span>
                         {ix.interaction_duration_seconds ? (
                           <span className="text-muted-foreground tabular-nums ml-auto">

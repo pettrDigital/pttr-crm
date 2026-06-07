@@ -62,9 +62,11 @@ export async function GET(
             ELSE NULL
           END AS interaction_duration_seconds,
           LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120) AS interaction_summary,
-          li.call_id
+          li.call_id,
+          did.label AS called_did_label
         FROM \`${DS}.lead_interactions\` li
         LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
+        LEFT JOIN \`${DS}.lkp_did_trade\` did ON rc.callee = did.did
         LEFT JOIN (
           SELECT parent_call_id, callee_name,
             ROW_NUMBER() OVER (PARTITION BY parent_call_id
@@ -107,8 +109,10 @@ export async function GET(
             ELSE NULL
           END AS interaction_duration_seconds,
           CAST(NULL AS STRING) AS interaction_summary,
-          rc.call_id
+          rc.call_id,
+          did.label AS called_did_label
         FROM \`${DS}.raw_calls\` rc
+        LEFT JOIN \`${DS}.lkp_did_trade\` did ON rc.callee = did.did
         LEFT JOIN (
           SELECT parent_call_id, callee_name,
             ROW_NUMBER() OVER (PARTITION BY parent_call_id
@@ -147,7 +151,8 @@ export async function GET(
           reply.from_name AS interaction_operator,
           CAST(NULL AS INT64) AS interaction_duration_seconds,
           LEFT(COALESCE(reply.subject, reply.body_preview, ''), 120) AS interaction_summary,
-          CAST(NULL AS STRING) AS call_id
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
         FROM \`${DS}.raw_emails_received\` reply
         JOIN (
           -- Find conversation_ids of the original email forms for this opp
@@ -176,7 +181,8 @@ export async function GET(
           'Website' AS interaction_operator,
           CAST(NULL AS INT64) AS interaction_duration_seconds,
           LEFT(COALESCE(wc.form_my_problem, ''), 120) AS interaction_summary,
-          CAST(NULL AS STRING) AS call_id
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
         FROM \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` wc
         WHERE wc.lead_id = @wcLeadId AND @wcLeadId IS NOT NULL
           AND wc.lead_type = 'Web Form'
@@ -194,7 +200,8 @@ export async function GET(
           'Website' AS interaction_operator,
           CAST(NULL AS INT64) AS interaction_duration_seconds,
           LEFT(COALESCE(lu.form_problem, ''), 120) AS interaction_summary,
-          CAST(NULL AS STRING) AS call_id
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
         FROM \`${DS}.vw_leads_unified\` lu
         WHERE lu.source_type = 'email'
           AND lu.phone IN UNNEST(@phones)
@@ -216,7 +223,8 @@ export async function GET(
           'OfficeHQ' AS interaction_operator,
           CAST(NULL AS INT64) AS interaction_duration_seconds,
           LEFT(e.body_preview, 120) AS interaction_summary,
-          CAST(NULL AS STRING) AS call_id
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
         FROM \`${DS}.raw_emails_received\` e
         WHERE LOWER(e.from_email) LIKE '%myreceptionist%'
           AND (
@@ -244,7 +252,8 @@ export async function GET(
       )
       SELECT interaction_id, lead_id, interaction_type, interaction_datetime,
         interaction_date, interaction_time, interaction_operator,
-        interaction_duration_seconds, interaction_summary, call_id
+        interaction_duration_seconds, interaction_summary, call_id,
+        called_did_label
       FROM combined
       ORDER BY interaction_datetime DESC
     `, {

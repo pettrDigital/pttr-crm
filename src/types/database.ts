@@ -102,6 +102,7 @@ export interface LeadInteraction {
   interaction_summary: string
   interaction_duration_seconds: number
   call_id: string | null
+  called_did_label: string | null
 }
 
 export interface JobHistory {
