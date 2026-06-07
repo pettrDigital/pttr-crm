@@ -55,7 +55,7 @@ function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
 
 function InteractionIcon({ type }: { type: string }) {
   const t = type?.toLowerCase() ?? ''
-  if (t.includes('answering service')) return <PhoneIncoming className="h-3.5 w-3.5 text-orange-500" />
+  if (t.includes('answering service')) return <FileText className="h-3.5 w-3.5 text-orange-500" />
   if (t.includes('inbound') && t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
   if (t.includes('outbound') && t.includes('call')) return <PhoneOutgoing className="h-3.5 w-3.5 text-blue-500" />
   if (t.includes('inbound') && t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />
@@ -64,6 +64,49 @@ function InteractionIcon({ type }: { type: string }) {
   if (t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
   if (t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />
   return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+}
+
+// Parse OfficeHQ answering-service email into structured fields.
+// Four templates: Plumbing (Customer Name/Phone/Address/Email/Reason/Caller ID),
+// Electrical (Customer Name/Full address/Phone/Email/Reason/Caller ID),
+// Non-Urgent (Full Name/Address/Phone Number/Email/Reason/Caller ID),
+// Minimal (Reason for call/Caller ID only).
+function parseOhqFields(body: string): { label: string; value: string }[] {
+  const fields: { label: string; value: string }[] = []
+  // Normalize: collapse \r\n to \n, strip leading trade prefix line
+  const text = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+  // Single-line fields in display order
+  const singleLine: [RegExp, string][] = [
+    [/(?:PLUMBING\s*-\s*Customer Name|ELECTRICAL\s*Customer Name|(?:Owner or Tenant\)\s*)?Full Name)\s*:\s*(.+)/i, 'Customer'],
+    [/(?:Full address|Address)\s*:\s*(.+)/i, 'Address'],
+    [/(?:Phone Number|Phone)\s*:\s*(.+)/i, 'Phone'],
+    [/Email\s*Address\s*:\s*(.+)/i, 'Email'],
+  ]
+
+  for (const [regex, label] of singleLine) {
+    const match = text.match(regex)
+    if (match) {
+      const value = match[1].trim()
+      if (value) fields.push({ label, value })
+    }
+  }
+
+  // Reason for call: capture everything until Caller ID or end of text (can be multi-line)
+  const reasonMatch = text.match(/Reason for call\s*:\s*([\s\S]*?)(?=\n\s*(?:Caller ID)\s*:|$)/i)
+  if (reasonMatch) {
+    const value = reasonMatch[1].replace(/\n+/g, ' ').trim()
+    if (value) fields.push({ label: 'Reason', value })
+  }
+
+  // Caller ID last
+  const callerIdMatch = text.match(/Caller ID\s*:\s*(.+)/i)
+  if (callerIdMatch) {
+    const value = callerIdMatch[1].trim()
+    if (value) fields.push({ label: 'Caller ID', value })
+  }
+
+  return fields
 }
 
 function stripHtml(html: string | null | undefined): string {
@@ -134,6 +177,30 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
         ) : (
           <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
             {detail?.full_transcript || 'No transcript available.'}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // OfficeHQ answering service — parse structured fields
+  if (ix.interaction_type === 'Answering Service' && detail?.email_body) {
+    const fields = parseOhqFields(detail.email_body)
+    return (
+      <div className="px-4 py-2 bg-orange-50/50 border-t border-orange-200/50 space-y-1.5">
+        <div className="text-[11px] font-medium text-orange-700 uppercase tracking-[0.05em]">OfficeHQ Answering Service</div>
+        {fields.length > 0 ? (
+          <div className="space-y-0.5">
+            {fields.map(({ label, value }, i) => (
+              <div key={i} className="text-[13px] flex gap-2">
+                <span className="text-muted-foreground shrink-0 min-w-[100px]">{label}</span>
+                <span className="text-foreground">{value}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+            {detail.email_body}
           </div>
         )}
       </div>
