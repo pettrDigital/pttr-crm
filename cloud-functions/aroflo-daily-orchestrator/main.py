@@ -1,7 +1,10 @@
 import functions_framework
 import requests
+import json
 from datetime import datetime, timedelta
-from google.cloud import bigquery, firestore
+from google.cloud import bigquery, secretmanager
+import firebase_admin
+from firebase_admin import credentials, firestore as fb_firestore
 
 TASKS_URL = "https://aroflo-tasks-ingest-tuxv3ywlea-ts.a.run.app"
 INVOICES_URL = "https://aroflo-invoices-ingest-tuxv3ywlea-ts.a.run.app"
@@ -188,36 +191,52 @@ def daily_orchestrator(request):
     print(f"Locations: {r9.json()}")
 
     # --- CONTACTS ---
-    r10 = requests.get(
-        f"{CONTACTS_URL}?mode=daily&date_start={date_start}&max_pages=50",
-        timeout=540
-    )
-    results["contacts"] = r10.json()
-    print(f"Contacts: {r10.json()}")
+    try:
+        r10 = requests.get(
+            f"{CONTACTS_URL}?mode=daily&date_start={date_start}&max_pages=50",
+            timeout=540
+        )
+        results["contacts"] = r10.json()
+        print(f"Contacts: {r10.json()}")
+    except Exception as e:
+        print(f"Contacts FAILED: {str(e)}")
+        results["contacts"] = {"status": "error", "error": str(e)}
 
     # --- QUOTES ---
-    r11 = requests.get(
-        f"{QUOTES_URL}?mode=daily&date_start={date_start}&max_pages=50",
-        timeout=540
-    )
-    results["quotes"] = r11.json()
-    print(f"Quotes: {r11.json()}")
+    try:
+        r11 = requests.get(
+            f"{QUOTES_URL}?mode=daily&date_start={date_start}&max_pages=50",
+            timeout=540
+        )
+        results["quotes"] = r11.json()
+        print(f"Quotes: {r11.json()}")
+    except Exception as e:
+        print(f"Quotes FAILED: {str(e)}")
+        results["quotes"] = {"status": "error", "error": str(e)}
 
     # --- CLIENT CUSTOM FIELDS ---
-    r12 = requests.get(
-        f"{CLIENT_CF_URL}?mode=daily&date_start={date_start}&max_pages=50",
-        timeout=540
-    )
-    results["client_customfields"] = r12.json()
-    print(f"ClientCustomFields: {r12.json()}")
+    try:
+        r12 = requests.get(
+            f"{CLIENT_CF_URL}?mode=daily&date_start={date_start}&max_pages=50",
+            timeout=540
+        )
+        results["client_customfields"] = r12.json()
+        print(f"ClientCustomFields: {r12.json()}")
+    except Exception as e:
+        print(f"ClientCustomFields FAILED: {str(e)}")
+        results["client_customfields"] = {"status": "error", "error": str(e)}
 
     # --- USER PROFILES ---
-    r13 = requests.get(
-        f"{USERPROFILES_URL}?max_pages=10",
-        timeout=540
-    )
-    results["userprofiles"] = r13.json()
-    print(f"UserProfiles: {r13.json()}")
+    try:
+        r13 = requests.get(
+            f"{USERPROFILES_URL}?max_pages=10",
+            timeout=540
+        )
+        results["userprofiles"] = r13.json()
+        print(f"UserProfiles: {r13.json()}")
+    except Exception as e:
+        print(f"UserProfiles FAILED: {str(e)}")
+        results["userprofiles"] = {"status": "error", "error": str(e)}
 
     # --- REBUILD OPPORTUNITIES TABLE (LAST — depends on all upstream syncs) ---
     # Connected-component clustering: spine events + AroFlo jobs → materialized table.
@@ -252,6 +271,19 @@ def daily_orchestrator(request):
     return {"status": "success", "date_start": date_start, "runs": results}, 200
 
 
+def _get_firestore_db():
+    """Get Firestore client via firebase_admin, using credentials from Secret Manager.
+    Firestore lives in project pettr-data (Firebase), not pttr-taskdata (GCP)."""
+    if not firebase_admin._apps:
+        sm = secretmanager.SecretManagerServiceClient()
+        sa_json = sm.access_secret_version(
+            request={"name": f"projects/{PROJECT_ID}/secrets/firebase-admin-sa/versions/latest"}
+        ).payload.data.decode("UTF-8")
+        cred = credentials.Certificate(json.loads(sa_json))
+        firebase_admin.initialize_app(cred)
+    return fb_firestore.client()
+
+
 def _auto_classify_ah_gap(bq):
     """Auto-classify after-hours gap calls (<20s) as Not Captured / Dropped Call.
 
@@ -273,7 +305,7 @@ def _auto_classify_ah_gap(bq):
         return {"status": "success", "classified": 0, "skipped_human": 0}
 
     opp_ids = [row.opportunity_id for row in rows]
-    db = firestore.Client(project=PROJECT_ID)
+    db = _get_firestore_db()
     collection = db.collection("crm_lead_overrides")
 
     # Batch-read existing overrides
