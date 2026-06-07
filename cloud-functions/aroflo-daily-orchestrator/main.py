@@ -1,7 +1,7 @@
 import functions_framework
 import requests
 from datetime import datetime, timedelta
-from google.cloud import bigquery
+from google.cloud import bigquery, firestore
 
 TASKS_URL = "https://aroflo-tasks-ingest-tuxv3ywlea-ts.a.run.app"
 INVOICES_URL = "https://aroflo-invoices-ingest-tuxv3ywlea-ts.a.run.app"
@@ -237,7 +237,94 @@ def daily_orchestrator(request):
         results["opportunities_rebuild"] = {"status": "error", "error": str(e)}
         # Log but don't fail the orchestrator — stale table is still usable
 
+    # --- AUTO-CLASSIFY AFTER-HOURS GAP CALLS (after opportunities rebuild) ---
+    # Short after-hours calls (<20s) with no content at any source → Not Captured.
+    # Runs server-side once daily, NOT on page load. Never overwrites human overrides.
+    try:
+        ah_result = _auto_classify_ah_gap(bq)
+        results["ah_gap_auto_classify"] = ah_result
+        print(f"After-hours gap auto-classify: {ah_result}")
+    except Exception as e:
+        error_msg = f"After-hours gap auto-classify FAILED: {str(e)}"
+        print(error_msg)
+        results["ah_gap_auto_classify"] = {"status": "error", "error": str(e)}
+
     return {"status": "success", "date_start": date_start, "runs": results}, 200
+
+
+def _auto_classify_ah_gap(bq):
+    """Auto-classify after-hours gap calls (<20s) as Not Captured / Dropped Call.
+
+    Guard: NEVER overwrites a human override. Only writes when:
+    - No Firestore doc exists for the opportunity, OR
+    - An existing doc was auto-written (updated_by starts with 'auto_rule:')
+
+    Tagged updated_by='auto_rule:ah_gap_short' so auto-writes are distinguishable.
+    """
+    # Find after-hours gap opportunities that are not captured (short calls)
+    rows = list(bq.query("""
+        SELECT opportunity_id
+        FROM `pttr-taskdata.ds_crm.vw_lead_enriched`
+        WHERE is_after_hours_gap = TRUE
+          AND (captured IS NULL OR captured = FALSE)
+    """, location="US").result())
+
+    if not rows:
+        return {"status": "success", "classified": 0, "skipped_human": 0}
+
+    opp_ids = [row.opportunity_id for row in rows]
+    db = firestore.Client(project=PROJECT_ID)
+    collection = db.collection("crm_lead_overrides")
+
+    # Batch-read existing overrides
+    doc_refs = [collection.document(oid) for oid in opp_ids]
+    existing_docs = {}
+    # Firestore get_all supports batches
+    for doc in db.get_all(doc_refs):
+        if doc.exists:
+            existing_docs[doc.id] = doc.to_dict()
+
+    classified = 0
+    skipped_human = 0
+    batch = db.batch()
+    batch_count = 0
+
+    for oid in opp_ids:
+        existing = existing_docs.get(oid)
+
+        if existing:
+            updated_by = existing.get("updated_by", "")
+            # Human override exists — skip (never overwrite)
+            if not str(updated_by).startswith("auto_rule:"):
+                skipped_human += 1
+                continue
+            # Already auto-classified with same rule — skip (idempotent)
+            if updated_by == "auto_rule:ah_gap_short":
+                continue
+
+        batch.set(collection.document(oid), {
+            "opportunity_id": oid,
+            "stage": "Not Captured",
+            "sub_status": "Dropped Call",
+            "loss_reason": None,
+            "note": "Auto-classified: after-hours gap call <20s, no content at any source",
+            "exclude_from_analysis": False,
+            "updated_by": "auto_rule:ah_gap_short",
+            "updated_at": datetime.utcnow(),
+        }, merge=True)
+        classified += 1
+        batch_count += 1
+
+        # Firestore batch limit is 500
+        if batch_count >= 400:
+            batch.commit()
+            batch = db.batch()
+            batch_count = 0
+
+    if batch_count > 0:
+        batch.commit()
+
+    return {"status": "success", "classified": classified, "skipped_human": skipped_human}
 
 
 def _get_opportunities_sql():
