@@ -536,7 +536,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                 return (
                   <div className={`border-b ${bg}`}>
                     <div className={`px-5 py-2 text-[13px] flex items-center gap-2`}>
-                      <a href={`/jobs/${convertedJob.jobnumber}`} className={`font-semibold ${txt} hover:underline`}>Job #{convertedJob.jobnumber}</a>
+                      <a href={`/jobs/${convertedJob.jobnumber}`} target="_blank" className={`font-semibold ${txt} hover:underline`}>Job #{convertedJob.jobnumber}</a>
                       {(convertedJob.primary_work_type || convertedJob.task_type) && <span className={active ? 'text-blue-700' : 'text-green-700'}>{convertedJob.primary_work_type || convertedJob.task_type}</span>}
                       <Badge variant="secondary" className={`text-xs ${active ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>{convertedJob.display_status}</Badge>
                       {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
@@ -630,7 +630,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                         <tr key={i} className={`hover:bg-muted/30 ${job.job_source === 'active' ? 'bg-blue-50/50' : ''}`}>
                           <td className="py-1 pr-3 border-t border-muted/50 tabular-nums">{formatDate(job.requested_date, 'd MMM yyyy')}</td>
                           <td className="py-1 pr-3 border-t border-muted/50 font-medium tabular-nums">
-                            <a href={`/jobs/${job.jobnumber}`} className="text-blue-600 hover:underline">{job.jobnumber}</a>
+                            <a href={`/jobs/${job.jobnumber}`} target="_blank" className="text-blue-600 hover:underline">{job.jobnumber}</a>
                           </td>
                           <td className="py-1 pr-3 border-t border-muted/50">{job.primary_work_type || job.task_type || '—'}</td>
                           <td className="py-1 pr-3 border-t border-muted/50">

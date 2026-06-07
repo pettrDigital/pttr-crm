@@ -25,5 +25,12 @@ export default function JobDetailPage() {
     return <div style={{ padding: 40, textAlign: 'center', color: '#B23636' }}>Job not found.</div>
   }
 
-  return <TaskDetail task={task} onBack={() => router.back()} />
+  return <TaskDetail task={task} onBack={() => {
+    // If opened in a new tab (no history), go to jobs list; otherwise go back
+    if (window.history.length <= 1) {
+      router.push('/jobs')
+    } else {
+      router.back()
+    }
+  }} />
 }
