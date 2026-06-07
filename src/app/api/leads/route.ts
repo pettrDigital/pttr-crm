@@ -36,10 +36,17 @@ export async function GET(request: Request) {
   const manualJobMap: Record<string, Record<string, unknown>> = {}
   if (manualJobNumbers.length > 0) {
     const jobRows = await query(`
-      SELECT jobnumber, client_name, task_type, status, job_status, display_status,
-        SAFE_CAST(task_invoices_total_ex AS FLOAT64) AS job_value, customer_type
-      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\`
-      WHERE jobnumber IN UNNEST(@jobnumbers)
+      SELECT tc.jobnumber, tc.client_name, tc.task_type, tc.status, tc.job_status, tc.display_status,
+        SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS job_value, tc.customer_type,
+        tc.norm_client_email,
+        COALESCE(
+          NULLIF(TRIM(tc.address_suburb), ''),
+          NULLIF(TRIM(td.location_suburb), ''),
+          NULLIF(TRIM(REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*([^,]+)$')), '')
+        ) AS suburb
+      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+      WHERE tc.jobnumber IN UNNEST(@jobnumbers)
     `, { jobnumbers: manualJobNumbers })
     for (const row of jobRows) {
       manualJobMap[(row as Record<string, unknown>).jobnumber as string] = row as Record<string, unknown>
@@ -55,7 +62,7 @@ export async function GET(request: Request) {
     const ov = overrideMap[lead.lead_id as string]
     if (!ov) return { ...lead, is_overridden: false, exclude_from_analysis: false }
 
-    // Manual job link: promote opportunity
+    // Manual job link: promote opportunity + resolve name/suburb/email from job
     const manualJn = ov.manual_job_number as string | undefined
     const manualJob = manualJn ? manualJobMap[manualJn] : null
     let jobOverrides = {}
@@ -71,9 +78,12 @@ export async function GET(request: Request) {
         job_count: 1,
         funnel_stage: isCompleted ? 'Paid Job' : 'Booked',
         manual_job_number: manualJn,
+        // Resolve identity from the linked job when lead has no name/suburb/email
+        ...(lead.contact_name ? {} : { contact_name: manualJob.client_name || null }),
+        ...(lead.suburb ? {} : { suburb: manualJob.suburb || null }),
+        ...(lead.email ? {} : { email: manualJob.norm_client_email || null }),
       }
     } else if (manualJn) {
-      // Job already auto-linked — just pass through the manual_job_number for the UI
       jobOverrides = { manual_job_number: manualJn }
     }
 
