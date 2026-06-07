@@ -1,6 +1,7 @@
 import { getLeads } from '@/lib/bigquery/queries'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { adminDb } from '@/lib/firebase/admin'
+import { query } from '@/lib/bigquery/client'
 
 export async function GET(request: Request) {
   try { await verifyAuth(request) } catch (e) { return e as Response }
@@ -61,23 +62,66 @@ export async function GET(request: Request) {
     batch.commit().catch(err => console.error('Auto-classify batch write failed:', err))
   }
 
+  // Resolve manual job links: batch-fetch job details for any overrides with manual_job_number
+  const manualJobNumbers = [...new Set(
+    Object.values(overrideMap)
+      .map(ov => ov.manual_job_number as string)
+      .filter(Boolean)
+  )]
+  const manualJobMap: Record<string, Record<string, unknown>> = {}
+  if (manualJobNumbers.length > 0) {
+    const jobRows = await query(`
+      SELECT jobnumber, client_name, task_type, status, job_status, display_status,
+        SAFE_CAST(task_invoices_total_ex AS FLOAT64) AS job_value, customer_type
+      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\`
+      WHERE jobnumber IN UNNEST(@jobnumbers)
+    `, { jobnumbers: manualJobNumbers })
+    for (const row of jobRows) {
+      manualJobMap[(row as Record<string, unknown>).jobnumber as string] = row as Record<string, unknown>
+    }
+  }
+
   // Merge: override wins for stage/sub_status UNLESS objective facts override.
   // Objective auto-classify beats "Unable to Classify": if BQ says Booked/Completed,
   // the human verdict doesn't hold — the lead auto-flips and exclude_from_analysis clears.
+  // Manual job links promote the opportunity to Booked/Completed with job value.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const merged = (leads as any[]).map((lead) => {
     const ov = overrideMap[lead.lead_id as string]
     if (!ov) return { ...lead, is_overridden: false, exclude_from_analysis: false }
 
-    // Objective facts win: if BQ says Booked or Paid Job, ignore the override
+    // Manual job link: promote opportunity
+    const manualJn = ov.manual_job_number as string | undefined
+    const manualJob = manualJn ? manualJobMap[manualJn] : null
+    let jobOverrides = {}
+    if (manualJob && !lead.all_jobnumbers) {
+      const isCompleted = manualJob.status === 'Archived'
+        && manualJob.job_status === 'Completed'
+        && (manualJob.job_value as number) > 0
+      jobOverrides = {
+        booking_status: 'Booked',
+        completed: isCompleted || lead.completed,
+        job_value: (manualJob.job_value as number) || lead.job_value,
+        all_jobnumbers: manualJn,
+        job_count: 1,
+        funnel_stage: isCompleted ? 'Paid Job' : 'Booked',
+        manual_job_number: manualJn,
+      }
+    } else if (manualJn) {
+      // Job already auto-linked — just pass through the manual_job_number for the UI
+      jobOverrides = { manual_job_number: manualJn }
+    }
+
+    // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
     if (objectiveWins && ov.sub_status === 'Unable to Classify') {
-      return { ...lead, is_overridden: false, exclude_from_analysis: false }
+      return { ...lead, ...jobOverrides, is_overridden: false, exclude_from_analysis: false }
     }
 
     return {
       ...lead,
-      funnel_stage: ov.stage as string,
+      ...jobOverrides,
+      funnel_stage: (jobOverrides as Record<string, unknown>).funnel_stage || ov.stage as string || lead.funnel_stage,
       sub_status: ov.sub_status as string,
       loss_reason: ov.loss_reason || null,
       is_overridden: true,

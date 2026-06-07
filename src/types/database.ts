@@ -78,6 +78,8 @@ export interface Lead {
   job_count: number
   // After-hours gap detection (no content at any source)
   is_after_hours_gap?: boolean
+  // Manual job link (Firestore override)
+  manual_job_number?: string | null
   // Override fields (merged from Firestore)
   is_overridden?: boolean
   sub_status?: string | null

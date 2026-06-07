@@ -29,12 +29,19 @@ interface InteractionDetail {
   email_body?: string; submitted_at?: string
 }
 
+interface JobValidation {
+  jobnumber: string; client_name: string; task_type: string; status: string
+  job_status: string; display_status: string; job_value: number | null
+  suburb: string | null; address: string | null; customer_type: string
+}
+
 interface LeadDetailModalProps {
   lead: Lead | null; open: boolean
   onOpenChange: (open: boolean) => void
   onClassify?: (opportunityId: string, stage: string, subStatus: string) => void
   onNavigate?: (direction: 'prev' | 'next') => void
   canPrev?: boolean; canNext?: boolean; position?: string
+  onJobLinked?: (opportunityId: string) => void
 }
 
 function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
@@ -146,9 +153,129 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
   )
 }
 
+// ─── LINK JOB ──────────────────────────────────────────────────────────────
+
+function LinkJobField({ lead, onLinked }: { lead: Lead; onLinked?: () => void }) {
+  const [input, setInput] = useState('')
+  const [validating, setValidating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [candidate, setCandidate] = useState<JobValidation | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const hasManualJob = !!lead.manual_job_number
+  const hasAutoJob = !!lead.all_jobnumbers && !lead.manual_job_number
+
+  async function validate() {
+    const jn = input.replace(/^[#jJnN\s]+/, '').trim()
+    if (!jn || !/^\d{4,7}$/.test(jn)) {
+      setError('Enter a valid job number (4-7 digits)')
+      return
+    }
+    setError(null)
+    setValidating(true)
+    setCandidate(null)
+    try {
+      const r = await authFetch(`/api/leads/${lead.lead_id}/link-job?jobnumber=${encodeURIComponent(jn)}`)
+      if (!r.ok) {
+        const data = await r.json()
+        setError(data.error || 'Job not found')
+        return
+      }
+      setCandidate(await r.json())
+    } catch {
+      setError('Failed to validate job')
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  async function confirm() {
+    if (!candidate) return
+    setSaving(true)
+    try {
+      const r = await authFetch(`/api/leads/${lead.lead_id}/link-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobnumber: candidate.jobnumber }),
+      })
+      if (r.ok) {
+        setCandidate(null)
+        setInput('')
+        onLinked?.()
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function unlink() {
+    setSaving(true)
+    try {
+      await authFetch(`/api/leads/${lead.lead_id}/link-job`, { method: 'DELETE' })
+      onLinked?.()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (hasAutoJob && !hasManualJob) return null // auto-linked, no manual override needed
+
+  return (
+    <div className="px-5 py-2 border-b">
+      {hasManualJob ? (
+        <div className="flex items-center gap-2 text-[13px]">
+          <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-[10px]">Manually Linked</Badge>
+          <span className="font-medium tabular-nums">Job #{lead.manual_job_number}</span>
+          <button className="text-[11px] text-red-600 hover:underline ml-auto" onClick={unlink} disabled={saving}>
+            {saving ? 'Removing...' : 'Remove link'}
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={e => { setInput(e.target.value); setError(null); setCandidate(null) }}
+              onKeyDown={e => { if (e.key === 'Enter') validate() }}
+              placeholder="Link job — enter AroFlo job number (e.g. 142819)"
+              className="flex-1 text-[13px] border rounded px-2 py-1 placeholder:text-muted-foreground/60"
+            />
+            <Button size="sm" variant="outline" onClick={validate} disabled={validating || !input.trim()}>
+              {validating ? 'Checking...' : 'Look up'}
+            </Button>
+          </div>
+          {error && <p className="text-[12px] text-red-600">{error}</p>}
+          {candidate && (
+            <div className="bg-blue-50 rounded p-2 text-[13px] space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-blue-900">Job #{candidate.jobnumber}</span>
+                <span className="text-blue-700">{candidate.client_name}</span>
+                <Badge variant="secondary" className="text-[10px]">{candidate.display_status}</Badge>
+              </div>
+              <div className="text-[12px] text-blue-800">
+                {candidate.task_type}
+                {candidate.address && <span> — {candidate.address}</span>}
+                {candidate.job_value != null && candidate.job_value > 0 && <span className="font-medium"> — {formatCurrency(candidate.job_value)}</span>}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" onClick={confirm} disabled={saving}>
+                  {saving ? 'Linking...' : 'Link this job'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setCandidate(null); setInput('') }}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── MAIN COMPONENT ─────────────────────────────────────────────────────────
 
-export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position }: LeadDetailModalProps) {
+export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position, onJobLinked }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
   const [loading, setLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -312,6 +439,14 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
               </div>
 
               <Separator />
+
+              {/* Link Job */}
+              <LinkJobField lead={lead} onLinked={() => {
+                // Re-fetch job history and notify parent to re-fetch lead data
+                authFetch(`/api/leads/${lead.lead_id}/job-history`)
+                  .then(r => r.json()).then((d: unknown) => setJobHistory(Array.isArray(d) ? d : []))
+                onJobLinked?.(lead.lead_id)
+              }} />
 
               {/* Job History */}
               <div className="px-5 py-3">

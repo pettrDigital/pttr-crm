@@ -43,6 +43,22 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
     )
   }, [])
 
+  // Called when a manual job link is saved — re-fetch leads to get merged data
+  const handleJobLinked = useCallback(() => {
+    authFetch('/api/leads')
+      .then(r => r.json())
+      .then(data => {
+        if (!Array.isArray(data)) return
+        setLeads(data)
+        // Update the selected lead with fresh data
+        setSelectedLead(prev => {
+          if (!prev) return null
+          return data.find((l: Lead) => l.lead_id === prev.lead_id) || prev
+        })
+      })
+      .catch(() => {})
+  }, [])
+
   // Navigate to prev/next in the filtered list
   const handleNavigate = useCallback((direction: 'prev' | 'next') => {
     if (!selectedLead) return
@@ -75,6 +91,7 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
         canPrev={currentIndex > 0}
         canNext={currentIndex >= 0 && currentIndex < filteredLeads.length - 1}
         position={currentIndex >= 0 ? `${currentIndex + 1} / ${filteredLeads.length}` : undefined}
+        onJobLinked={handleJobLinked}
       />
     </>
   )
