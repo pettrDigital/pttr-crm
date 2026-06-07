@@ -522,11 +522,27 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                 const val = convertedJob.task_invoices_total_ex && convertedJob.task_invoices_total_ex > 0
                   ? formatCurrency(convertedJob.task_invoices_total_ex) : null
                 return (
-                  <div className={`px-5 py-2 border-b ${bg} text-[13px] flex items-center gap-2`}>
-                    <span className={`font-semibold ${txt}`}>Job #{convertedJob.jobnumber}</span>
-                    {(convertedJob.primary_work_type || convertedJob.task_type) && <span className={active ? 'text-blue-700' : 'text-green-700'}>{convertedJob.primary_work_type || convertedJob.task_type}</span>}
-                    <Badge variant="secondary" className={`text-xs ${active ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>{convertedJob.display_status}</Badge>
-                    {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
+                  <div className={`border-b ${bg}`}>
+                    <div className={`px-5 py-2 text-[13px] flex items-center gap-2`}>
+                      <a href={`/jobs/${convertedJob.jobnumber}`} className={`font-semibold ${txt} hover:underline`}>Job #{convertedJob.jobnumber}</a>
+                      {(convertedJob.primary_work_type || convertedJob.task_type) && <span className={active ? 'text-blue-700' : 'text-green-700'}>{convertedJob.primary_work_type || convertedJob.task_type}</span>}
+                      <Badge variant="secondary" className={`text-xs ${active ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>{convertedJob.display_status}</Badge>
+                      {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
+                    </div>
+                    {(convertedJob.description || convertedJob.task_notes) && (
+                      <div className="px-5 pb-2 space-y-1.5">
+                        {convertedJob.description && (
+                          <div className="text-[12px] text-foreground/80 whitespace-pre-wrap bg-white/60 rounded p-2 max-h-[150px] overflow-y-auto leading-relaxed">
+                            {stripHtml(convertedJob.description)}
+                          </div>
+                        )}
+                        {convertedJob.task_notes && (
+                          <div className="text-[12px] text-muted-foreground whitespace-pre-wrap bg-white/40 rounded p-2 max-h-[120px] overflow-y-auto leading-relaxed">
+                            {convertedJob.task_notes}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -538,7 +554,9 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                   <div className="space-y-2"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
                 ) : !interactions?.length ? (
                   <p className="text-[13px] text-muted-foreground py-2">
-                    {lead.captured ? 'Captured — interaction detail not yet linked' : 'No interactions recorded.'}
+                    {lead.captured ? 'Captured — interaction detail not yet linked'
+                      : lead.lead_type === 'direct_booking' ? 'Direct booking — no inbound call or form on file'
+                      : 'No interactions recorded.'}
                   </p>
                 ) : interactions.map((ix, i) => {
                   const ixId = ix.interaction_id || ix.call_id || String(i)
@@ -599,7 +617,9 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                       {jobHistory.map((job, i) => (
                         <tr key={i} className={`hover:bg-muted/30 ${job.job_source === 'active' ? 'bg-blue-50/50' : ''}`}>
                           <td className="py-1 pr-3 border-t border-muted/50 tabular-nums">{formatDate(job.requested_date, 'd MMM yyyy')}</td>
-                          <td className="py-1 pr-3 border-t border-muted/50 font-medium tabular-nums">{job.jobnumber}</td>
+                          <td className="py-1 pr-3 border-t border-muted/50 font-medium tabular-nums">
+                            <a href={`/jobs/${job.jobnumber}`} className="text-blue-600 hover:underline">{job.jobnumber}</a>
+                          </td>
                           <td className="py-1 pr-3 border-t border-muted/50">{job.primary_work_type || job.task_type || '—'}</td>
                           <td className="py-1 pr-3 border-t border-muted/50">
                             {job.job_source === 'active'
