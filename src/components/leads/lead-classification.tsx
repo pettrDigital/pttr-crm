@@ -28,6 +28,12 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
     ],
   },
   {
+    stage: 'Pending',
+    subStatuses: [
+      { label: 'Pending' },
+    ],
+  },
+  {
     stage: 'Not Booked',
     subStatuses: [
       { label: 'Lost / Unresponsive' },
@@ -93,6 +99,7 @@ function isAutoItem(lead: Lead, stage: string, ss: string): boolean {
 const STAGE_COLORS: Record<string, { header: string; active: string }> = {
   'Not Captured': { header: 'text-gray-500', active: 'bg-gray-700 text-white' },
   'Not Quotable': { header: 'text-orange-600', active: 'bg-orange-600 text-white' },
+  'Pending': { header: 'text-blue-600', active: 'bg-blue-600 text-white' },
   'Not Booked': { header: 'text-red-600', active: 'bg-red-600 text-white' },
   'Booked': { header: 'text-green-700', active: 'bg-green-700 text-white' },
 }

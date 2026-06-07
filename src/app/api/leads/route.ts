@@ -112,15 +112,32 @@ export async function GET(request: Request) {
       jobOverrides = { manual_job_number: manualJn }
     }
 
+    // Profile override
+    const profileOverride = ov.profile_override as string | undefined
+    const profileFields = profileOverride ? {
+      profile: profileOverride === 'PTTR' ? 'Plumber to the Rescue' : profileOverride === 'ETTR' ? 'Electrician to the Rescue' : lead.profile,
+      service: profileOverride || lead.service,
+      profile_override: profileOverride,
+    } : {}
+
+    // Pending metadata
+    const pendingFields = ov.pending_since ? {
+      pending_since: typeof ov.pending_since === 'object' && '_seconds' in (ov.pending_since as object)
+        ? new Date((ov.pending_since as { _seconds: number })._seconds * 1000).toISOString()
+        : String(ov.pending_since),
+    } : {}
+
     // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
-    if (objectiveWins && ov.sub_status === 'Unable to Classify') {
-      return { ...lead, ...jobOverrides, is_overridden: false, exclude_from_analysis: false }
+    if (objectiveWins && (ov.sub_status === 'Unable to Classify' || ov.sub_status === 'Pending')) {
+      return { ...lead, ...jobOverrides, ...profileFields, is_overridden: false, exclude_from_analysis: false }
     }
 
     return {
       ...lead,
       ...jobOverrides,
+      ...profileFields,
+      ...pendingFields,
       funnel_stage: (jobOverrides as Record<string, unknown>).funnel_stage || ov.stage as string || lead.funnel_stage,
       sub_status: ov.sub_status as string,
       loss_reason: ov.loss_reason || null,

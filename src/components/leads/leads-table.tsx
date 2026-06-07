@@ -115,10 +115,11 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
         const l = row.original
         if (!l.funnel_stage) return '—'
         const sub = l.sub_status || l.dnp_reason
+        const showSub = sub && sub !== '--' && sub !== l.funnel_stage
         return (
           <span className="inline-flex items-center gap-1">
             <FunnelStageBadge stage={l.funnel_stage} />
-            {sub && sub !== '--' && <span className="text-[11px] text-muted-foreground/70">{sub}</span>}
+            {showSub && <span className="text-[11px] text-muted-foreground/70">{sub}</span>}
             {l.is_overridden && <span className="text-[10px] text-muted-foreground/50">✎</span>}
           </span>
         )

@@ -80,6 +80,10 @@ export interface Lead {
   is_after_hours_gap?: boolean
   // Manual job link (Firestore override)
   manual_job_number?: string | null
+  // Profile override (Firestore)
+  profile_override?: string | null
+  // Pending status timestamp
+  pending_since?: string | null
   // Override fields (merged from Firestore)
   is_overridden?: boolean
   sub_status?: string | null

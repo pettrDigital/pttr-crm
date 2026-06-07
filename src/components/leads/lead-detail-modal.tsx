@@ -42,6 +42,7 @@ interface LeadDetailModalProps {
   onNavigate?: (direction: 'prev' | 'next') => void
   canPrev?: boolean; canNext?: boolean; position?: string
   onJobLinked?: (opportunityId: string) => void
+  onLeadUpdate?: () => void
 }
 
 function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
@@ -344,9 +345,64 @@ function LinkJobField({ lead, onLinked }: { lead: Lead; onLinked?: () => void })
   )
 }
 
+// ─── PROFILE TOGGLE ────────────────────────────────────────────────────────
+
+function ProfileToggle({ lead, onUpdate }: { lead: Lead; onUpdate?: () => void }) {
+  const [saving, setSaving] = useState(false)
+  const isOverridden = !!lead.profile_override
+  const currentService = lead.service === 'Plumber to the Rescue' ? 'PTTR'
+    : lead.service === 'Electrician to the Rescue' ? 'ETTR'
+    : lead.service
+  const displayService = isOverridden ? lead.profile_override! : currentService
+
+  async function setProfile(value: string | null) {
+    setSaving(true)
+    try {
+      await authFetch(`/api/leads/${lead.lead_id}/classify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_override: value }),
+      })
+      onUpdate?.()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1 ml-auto">
+      {(['PTTR', 'ETTR'] as const).map(trade => {
+        const active = displayService === trade
+        return (
+          <button
+            key={trade}
+            disabled={saving}
+            className={`text-[10px] px-1.5 py-[1px] rounded border transition-colors ${
+              active
+                ? trade === 'PTTR'
+                  ? 'bg-blue-600 text-white border-transparent font-medium'
+                  : 'bg-yellow-500 text-white border-transparent font-medium'
+                : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30'
+            }`}
+            onClick={() => {
+              if (active && isOverridden) setProfile(null)  // reset to auto
+              else if (!active) setProfile(trade)
+            }}
+            title={active && isOverridden ? 'Click to reset to auto' : `Set profile to ${trade}`}
+          >
+            {trade}
+          </button>
+        )
+      })}
+      {isOverridden && <span className="text-[9px] text-muted-foreground">(edited)</span>}
+      {!isOverridden && currentService !== 'Unknown (confirm)' && <span className="text-[9px] text-muted-foreground">(auto)</span>}
+    </div>
+  )
+}
+
 // ─── MAIN COMPONENT ─────────────────────────────────────────────────────────
 
-export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position, onJobLinked }: LeadDetailModalProps) {
+export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position, onJobLinked, onLeadUpdate }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
   const [loading, setLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -445,6 +501,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                 {lead.funnel_stage && <FunnelStageBadge stage={lead.funnel_stage} />}
                 {lead.job_value != null && lead.job_value > 0 && <span className="font-medium tabular-nums">{formatCurrency(lead.job_value)}</span>}
                 {lead.business_hours_flag === 'After Hours' && <Badge variant="secondary" className="bg-orange-100 text-orange-800 text-xs">After Hours</Badge>}
+                <ProfileToggle lead={lead} onUpdate={onLeadUpdate} />
               </div>
             </div>
 

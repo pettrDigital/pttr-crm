@@ -11,13 +11,24 @@ export async function POST(
 
   try {
     const body = await request.json()
+
+    // Profile override (separate from classification)
+    if (body.profile_override !== undefined) {
+      await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
+        profile_override: body.profile_override,
+        profile_overridden_at: new Date(),
+      }, { merge: true })
+      return Response.json({ ok: true })
+    }
+
     const { stage, sub_status, loss_reason, note, exclude_from_analysis } = body
 
     if (!stage || !sub_status) {
       return Response.json({ error: 'stage and sub_status required' }, { status: 400 })
     }
 
-    await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: Record<string, any> = {
       opportunity_id: opportunityId,
       stage,
       sub_status,
@@ -26,7 +37,16 @@ export async function POST(
       exclude_from_analysis: exclude_from_analysis || false,
       updated_by: 'admin',
       updated_at: new Date(),
-    })
+    }
+
+    // Pending status: stamp pending_since on set, clear on anything else
+    if (sub_status === 'Pending') {
+      data.pending_since = new Date()
+    } else {
+      data.pending_since = null
+    }
+
+    await adminDb.collection('crm_lead_overrides').doc(opportunityId).set(data, { merge: true })
 
     return Response.json({ ok: true })
   } catch (error) {

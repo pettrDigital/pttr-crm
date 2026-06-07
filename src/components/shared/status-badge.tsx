@@ -22,7 +22,7 @@ const funnelStageConfig: Record<string, { icon: LucideIcon; iconClass: string; t
   // Legacy stages from old WC-based funnel
   'Booked - Pending':           { icon: Clock,    iconClass: 'text-blue-600',   textClass: 'text-blue-800',   label: 'Booked - Pending' },
   'Booked - Did Not Complete':  { icon: CircleX,  iconClass: 'text-orange-500', textClass: 'text-orange-800', label: 'Booked - Did Not Complete' },
-  'Pending':                    { icon: Loader,   iconClass: 'text-yellow-600', textClass: 'text-yellow-800', label: 'Pending' },
+  'Pending':                    { icon: Clock,    iconClass: 'text-blue-500',   textClass: 'text-blue-700',   label: 'Pending' },
 }
 
 const profileStyles: Record<string, string> = {

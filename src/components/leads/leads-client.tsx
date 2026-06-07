@@ -92,6 +92,7 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
         canNext={currentIndex >= 0 && currentIndex < filteredLeads.length - 1}
         position={currentIndex >= 0 ? `${currentIndex + 1} / ${filteredLeads.length}` : undefined}
         onJobLinked={handleJobLinked}
+        onLeadUpdate={handleJobLinked}
       />
     </>
   )
