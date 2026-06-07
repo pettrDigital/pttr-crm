@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { query } from '@/lib/bigquery/client'
 
-const DS = 'pttr-taskdata.ds_crm'
+const DS = 'pttr-taskdata.ds_aroflo'
 
 export async function GET(
   request: NextRequest,
@@ -11,11 +11,20 @@ export async function GET(
   try { await verifyAuth(request) } catch (e) { return e as Response }
   const { id: accountId } = await params
 
+  // Pull real client contacts from contacts_deduped (AroFlo source of truth),
+  // NOT vw_contacts which incorrectly uses task contactname (CSR/staff names).
   const rows = await query(`
-    SELECT contact_id, contact_name, contact_type, phone, mobile, email
-    FROM \`${DS}.vw_contacts\`
-    WHERE account_id = @accountId
-    ORDER BY contact_name
+    SELECT
+      cd.contactid AS contact_id,
+      CONCAT(COALESCE(cd.firstname, ''), ' ', COALESCE(cd.lastname, '')) AS contact_name,
+      cd.phone,
+      cd.mobile,
+      cd.email
+    FROM \`${DS}.contacts_deduped\` cd
+    WHERE cd.clientid = @accountId
+      AND (cd.archived IS NULL OR cd.archived != 'true')
+      AND COALESCE(cd.firstname, cd.lastname) IS NOT NULL
+    ORDER BY cd.lastname, cd.firstname
   `, { accountId })
 
   return Response.json(rows)
