@@ -237,16 +237,30 @@ export async function GET(
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 60 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
-      -- Combine + dedupe (prefer WC-linked, then calls, then forms, then email threads, then OHQ)
+      -- Dedupe forms + email threads against WC interactions (±90s timestamp overlap).
+      -- WC interactions are authoritative — if they cover the same event, skip the dupe.
+      forms_deduped AS (
+        SELECT fs.* FROM form_submissions fs
+        LEFT JOIN wc_interactions wi
+          ON ABS(TIMESTAMP_DIFF(CAST(wi.interaction_datetime AS TIMESTAMP), CAST(fs.interaction_datetime AS TIMESTAMP), SECOND)) <= 90
+        WHERE wi.interaction_datetime IS NULL
+      ),
+      threads_deduped AS (
+        SELECT etr.* FROM email_thread_replies etr
+        LEFT JOIN wc_interactions wi
+          ON ABS(TIMESTAMP_DIFF(CAST(wi.interaction_datetime AS TIMESTAMP), CAST(etr.interaction_datetime AS TIMESTAMP), SECOND)) <= 90
+        WHERE wi.interaction_datetime IS NULL
+      ),
+      -- Combine: WC (authoritative) + calls (dedupe by call_id) + surviving forms/threads + OHQ
       combined AS (
         SELECT * FROM wc_interactions
         UNION ALL
         SELECT * FROM phone_calls pc
         WHERE pc.call_id NOT IN (SELECT call_id FROM wc_interactions WHERE call_id IS NOT NULL)
         UNION ALL
-        SELECT * FROM form_submissions
+        SELECT * FROM forms_deduped
         UNION ALL
-        SELECT * FROM email_thread_replies
+        SELECT * FROM threads_deduped
         UNION ALL
         SELECT * FROM ohq_emails
       )
