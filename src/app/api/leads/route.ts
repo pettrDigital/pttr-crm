@@ -127,9 +127,19 @@ export async function GET(request: Request) {
         : String(ov.pending_since),
     } : {}
 
+    // Auto-translate "CSR Failure" on read (catches legacy values not yet migrated)
+    let subStatus = ov.sub_status as string
+    let lossReason = ov.loss_reason as string | null
+    let requiresCsrReview = ov.requires_csr_review as boolean || false
+    if (subStatus === 'CSR Failure' || lossReason === 'CSR Failure') {
+      subStatus = subStatus === 'CSR Failure' ? 'Lost / Unresponsive' : subStatus
+      lossReason = lossReason === 'CSR Failure' ? 'Lost / Unresponsive' : lossReason
+      requiresCsrReview = true
+    }
+
     // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
-    if (objectiveWins && (ov.sub_status === 'Unable to Classify' || ov.sub_status === 'Pending')) {
+    if (objectiveWins && (subStatus === 'Unable to Classify' || subStatus === 'Pending')) {
       return { ...lead, ...jobOverrides, ...profileFields, is_overridden: false, exclude_from_analysis: false }
     }
 
@@ -139,10 +149,11 @@ export async function GET(request: Request) {
       ...profileFields,
       ...pendingFields,
       funnel_stage: (jobOverrides as Record<string, unknown>).funnel_stage || ov.stage as string || lead.funnel_stage,
-      sub_status: ov.sub_status as string,
-      loss_reason: ov.loss_reason || null,
+      sub_status: subStatus,
+      loss_reason: lossReason || null,
       is_overridden: true,
       exclude_from_analysis: ov.exclude_from_analysis || false,
+      requires_csr_review: requiresCsrReview,
     }
   })
 

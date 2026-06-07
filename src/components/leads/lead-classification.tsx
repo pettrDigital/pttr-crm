@@ -42,7 +42,6 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
       { label: 'Capacity / Scheduling' },
       { label: 'Wanted Quote Over Phone' },
       { label: 'Customer Resolved' },
-      { label: 'CSR Failure' },
       { label: 'Other' },
     ],
   },
@@ -236,6 +235,15 @@ export function LeadClassification({ lead, onClassify }: Props) {
                 {lr}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* CSR Review flag */}
+      {lead.requires_csr_review && (
+        <div className="pt-1 border-t border-muted/40">
+          <div className="text-[10px] font-semibold text-amber-700 bg-amber-50 rounded px-2 py-1">
+            Requires CSR Review
           </div>
         </div>
       )}
