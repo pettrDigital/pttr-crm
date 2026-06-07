@@ -76,9 +76,9 @@ export function TopBar() {
                 <div className="px-2 py-1.5 text-xs font-semibold uppercase text-muted-foreground">
                   {type}
                 </div>
-                {items.map((item) => (
+                {items.map((item, i) => (
                   <button
-                    key={item.result_id}
+                    key={`${type}-${item.result_id ?? i}`}
                     className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent cursor-pointer text-left"
                     onClick={() => handleSelect(item)}
                   >
