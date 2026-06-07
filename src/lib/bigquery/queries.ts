@@ -381,9 +381,13 @@ export async function getJobDetail(jobId: string) {
 export async function getJobLabour(jobId: string) {
   return query(`
     SELECT user_username, worktype, hours, cost, sell, workdate, note
-    FROM \`pttr-taskdata.ds_aroflo.tasklabours_raw\`
-    WHERE task_jobnumber = @jobId
-      AND (deleted IS NULL OR deleted != 'true')
+    FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY lineid ORDER BY workdate DESC) AS rn
+      FROM \`pttr-taskdata.ds_aroflo.tasklabours_raw\`
+      WHERE task_jobnumber = @jobId
+        AND (deleted IS NULL OR deleted != 'true')
+    )
+    WHERE rn = 1
     ORDER BY workdate DESC
   `, { jobId })
 }
