@@ -189,7 +189,7 @@ export async function GET(
 
         UNION ALL
 
-        -- Email-parsed form submission
+        -- Email-parsed form submission (phone-matched)
         SELECT
           lu.lead_id AS interaction_id,
           CAST(NULL AS INT64) AS lead_id,
@@ -208,6 +208,28 @@ export async function GET(
           AND lu.lead_timestamp BETWEEN
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+
+        UNION ALL
+
+        -- Email-parsed form submission (phoneless fallback — match by timestamp)
+        -- For opportunities with no phone, the form IS the spine event.
+        SELECT
+          lu.lead_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          'Form Submission' AS interaction_type,
+          lu.lead_timestamp_sydney AS interaction_datetime,
+          DATE(lu.lead_timestamp_sydney) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', lu.lead_timestamp_sydney) AS interaction_time,
+          'Website' AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(lu.form_problem, lu.contact_name, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
+        FROM \`${DS}.vw_leads_unified\` lu
+        WHERE lu.source_type = 'email'
+          AND ARRAY_LENGTH(@phones) = 0
+          AND lu.phone IS NULL
+          AND ABS(TIMESTAMP_DIFF(lu.lead_timestamp, CAST(@oppTimestamp AS TIMESTAMP), SECOND)) <= 5
       ),
       -- Source 5: OfficeHQ answering-service emails matched by phone + time window
       -- These carry customer name, phone, address, reason for call — critical for
