@@ -415,6 +415,18 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
   const [notesLoading, setNotesLoading] = useState(false)
   const [expandedIx, setExpandedIx] = useState<Set<string>>(new Set())
 
+  // Auto-mark as reviewed when opened (clears needs-review flag)
+  useEffect(() => {
+    if (!lead || !open || lead.is_overridden) return
+    authFetch(`/api/leads/${lead.lead_id}/classify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage: lead.funnel_stage || 'Captured', sub_status: lead.sub_status || lead.funnel_stage || 'Captured' }),
+    }).catch(() => {})
+    // Update local state so the badge disappears immediately
+    onClassify?.(lead.lead_id, lead.funnel_stage || 'Captured', lead.sub_status || lead.funnel_stage || 'Captured')
+  }, [lead?.lead_id, open]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!lead || !open) {
       setInteractions([]); setJobHistory([]); setNoteOpen(false); setExpandedIx(new Set())
