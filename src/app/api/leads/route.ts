@@ -127,15 +127,18 @@ export async function GET(request: Request) {
         : String(ov.pending_since),
     } : {}
 
-    // Auto-translate "CSR Failure" on read (catches legacy values not yet migrated)
+    // Auto-translate legacy values on read
     let subStatus = ov.sub_status as string
     let lossReason = ov.loss_reason as string | null
     let requiresCsrReview = ov.requires_csr_review as boolean || false
+    // CSR Failure → Customer Unresponsive + requires_csr_review
     if (subStatus === 'CSR Failure' || lossReason === 'CSR Failure') {
-      subStatus = subStatus === 'CSR Failure' ? 'Lost / Unresponsive' : subStatus
-      lossReason = lossReason === 'CSR Failure' ? 'Lost / Unresponsive' : lossReason
+      subStatus = subStatus === 'CSR Failure' ? 'Customer Unresponsive' : subStatus
+      lossReason = lossReason === 'CSR Failure' ? null : lossReason
       requiresCsrReview = true
     }
+    // Lost / Unresponsive → Customer Unresponsive
+    if (subStatus === 'Lost / Unresponsive') subStatus = 'Customer Unresponsive'
 
     // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true

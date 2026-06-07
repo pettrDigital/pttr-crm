@@ -36,7 +36,8 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
   {
     stage: 'Not Booked',
     subStatuses: [
-      { label: 'Lost / Unresponsive' },
+      { label: 'Customer Unresponsive' },
+      { label: 'Booked Elsewhere' },
       { label: 'Tenant / Strata Referral' },
       { label: 'Price / Minimum Call Out' },
       { label: 'Capacity / Scheduling' },
@@ -57,14 +58,11 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
   },
 ]
 
-const LOSS_REASONS = [
-  'Price Sensitivity', 'Competitor Speed', 'Speed to Lead', 'Wanted Same Day',
-  'After Hours Pricing', 'Customer Unresponsive', 'Customer Resolved', 'Capacity',
-  'Tenant / Strata', 'Talked Client Out of Booking', 'PETTR Service Issue',
-  'Unknown', 'Not Applicable',
-]
-
-const LOSS_REASON_STAGES = new Set(['Not Booked', 'Booking Cancelled', 'Quote Only'])
+// Legacy value mapping — translate on display
+const LEGACY_SUB_STATUS: Record<string, string> = {
+  'Lost / Unresponsive': 'Customer Unresponsive',
+  'CSR Failure': 'Customer Unresponsive',
+}
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -76,7 +74,7 @@ function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
   // ≥20s = engaged via answering service, no contact captured → Lost/Unresponsive
   // <20s = dropped/brief/hangup → Not Captured / Dropped Call
   if (lead.is_after_hours_gap) {
-    if (lead.captured) return { stage: 'Not Booked', sub_status: 'Lost / Unresponsive' }
+    if (lead.captured) return { stage: 'Not Booked', sub_status: 'Customer Unresponsive' }
     return { stage: 'Not Captured', sub_status: 'Dropped Call' }
   }
   if (lead.captured) return { stage: 'Captured', sub_status: '' }
@@ -89,7 +87,7 @@ function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
 function isAutoItem(lead: Lead, stage: string, ss: string): boolean {
   if (stage === 'Not Captured' && ss === 'Dropped Call') return !!(lead.answered && !lead.captured)
   if (stage === 'Not Captured' && ss === 'Unanswered Call') return !!(lead.lead_type === 'call' && !lead.answered)
-  if (stage === 'Not Booked' && ss === 'Lost / Unresponsive') return !!(lead.is_after_hours_gap && lead.captured)
+  if (stage === 'Not Booked' && ss === 'Customer Unresponsive') return !!(lead.is_after_hours_gap && lead.captured)
   if (stage === 'Booked' && ss === 'Job Pending') return !!(lead.booking_status === 'Booked' && !lead.completed)
   if (stage === 'Booked' && ss === 'Job Complete') return !!lead.completed
   return false
@@ -116,10 +114,16 @@ export function LeadClassification({ lead, onClassify }: Props) {
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [csrReview, setCsrReview] = useState(!!lead.requires_csr_review)
+  const [otherPending, setOtherPending] = useState(false)
+  const [otherText, setOtherText] = useState('')
 
-  const effective = override || { stage: auto.stage, sub_status: auto.sub_status, loss_reason: null, note: null }
+  const raw = override || { stage: auto.stage, sub_status: auto.sub_status, loss_reason: null, note: null }
+  // Translate legacy sub-status values
+  const effective = {
+    ...raw,
+    sub_status: LEGACY_SUB_STATUS[raw.sub_status] || raw.sub_status,
+  }
   const isOverridden = override !== null
-  const showLossReason = LOSS_REASON_STAGES.has(effective.sub_status) || effective.stage === 'Not Booked'
 
   useEffect(() => {
     setLoaded(false)
@@ -128,7 +132,12 @@ export function LeadClassification({ lead, onClassify }: Props) {
     authFetch(`/api/leads/${lead.lead_id}/classify`)
       .then(r => r.json())
       .then(data => {
-        if (data && data.stage) setOverride({ stage: data.stage, sub_status: data.sub_status, loss_reason: data.loss_reason, note: data.note })
+        if (data && data.stage) setOverride({
+          stage: data.stage,
+          sub_status: LEGACY_SUB_STATUS[data.sub_status] || data.sub_status,
+          loss_reason: data.loss_reason,
+          note: data.note,
+        })
         if (data && data.requires_csr_review) setCsrReview(true)
         setLoaded(true)
       })
@@ -205,7 +214,15 @@ export function LeadClassification({ lead, onClassify }: Props) {
                           ? 'bg-muted/60 text-muted-foreground border-muted font-medium'
                           : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30 hover:bg-muted/30'
                     } ${isAutoNotCaptured && !isActive ? 'opacity-60' : ''}`}
-                    onClick={() => classify(stage, label)}
+                    onClick={() => {
+                      if (label === 'Other') {
+                        setOtherPending(true)
+                        setOtherText(effective.note || '')
+                      } else {
+                        setOtherPending(false)
+                        classify(stage, label)
+                      }
+                    }}
                     title={isAuto ? `Auto-detected: ${label}` : label}
                   >
                     {label}{isAuto && !isActive ? ' ●' : ''}
@@ -216,31 +233,6 @@ export function LeadClassification({ lead, onClassify }: Props) {
           </div>
         )
       })}
-
-      {/* Loss reason */}
-      {showLossReason && (
-        <div className="pt-1 border-t border-muted/40">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1">
-            Loss Reason
-          </div>
-          <div className="flex flex-wrap gap-[3px]">
-            {LOSS_REASONS.map(lr => (
-              <button
-                key={lr}
-                disabled={saving}
-                className={`text-[10px] px-1.5 py-[1px] rounded border transition-colors ${
-                  effective.loss_reason === lr
-                    ? 'bg-foreground text-background border-transparent font-medium'
-                    : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30 hover:bg-muted/30'
-                }`}
-                onClick={() => classify(effective.stage, effective.sub_status, lr)}
-              >
-                {lr}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* CSR Review flag — toggleable */}
       <div className="pt-2 mt-2 border-t border-muted/60">
@@ -270,21 +262,51 @@ export function LeadClassification({ lead, onClassify }: Props) {
         </button>
       </div>
 
-      {/* Note for "Other" */}
-      {effective.sub_status === 'Other' && (
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1">Note</div>
+      {/* "Other" requires free text before saving */}
+      {(otherPending || effective.sub_status === 'Other') && (
+        <div className="space-y-1">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Reason (required)</div>
           <input
             type="text"
-            className="flex-1 text-[11px] border rounded px-2 py-0.5"
-            placeholder="Describe..."
-            defaultValue={effective.note || ''}
+            className="w-full text-[11px] border rounded px-2 py-1"
+            placeholder="Describe the reason..."
+            value={otherPending ? otherText : (effective.note || '')}
+            onChange={e => {
+              if (otherPending) setOtherText(e.target.value)
+            }}
             onBlur={e => {
-              if (e.target.value !== (effective.note || '')) {
-                classify(effective.stage, effective.sub_status, effective.loss_reason, e.target.value)
+              // For already-saved "Other", update note on blur
+              if (!otherPending && e.target.value !== (effective.note || '') && e.target.value.trim()) {
+                classify(effective.stage, effective.sub_status, effective.loss_reason, e.target.value.trim())
+              }
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && otherPending && otherText.trim()) {
+                classify('Not Booked', 'Other', null, otherText.trim())
+                setOtherPending(false)
               }
             }}
           />
+          {otherPending && (
+            <div className="flex gap-1">
+              <button
+                disabled={saving || !otherText.trim()}
+                className="text-[10px] px-2 py-0.5 rounded bg-foreground text-background disabled:opacity-40"
+                onClick={() => {
+                  classify('Not Booked', 'Other', null, otherText.trim())
+                  setOtherPending(false)
+                }}
+              >
+                Save
+              </button>
+              <button
+                className="text-[10px] px-2 py-0.5 rounded border border-muted text-muted-foreground"
+                onClick={() => setOtherPending(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { adminDb } from '@/lib/firebase/admin'
 
-// One-time migration: CSR Failure → Lost / Unresponsive + requires_csr_review
+// One-time migration: CSR Failure → Customer Unresponsive + requires_csr_review
 // GET to preview, POST to execute
 export async function GET(request: NextRequest) {
   try { await verifyAuth(request) } catch (e) { return e as Response }
@@ -60,10 +60,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (data.sub_status === 'CSR Failure') {
-      updates.sub_status = 'Lost / Unresponsive'
+      updates.sub_status = 'Customer Unresponsive'
     }
     if (data.loss_reason === 'CSR Failure') {
-      updates.loss_reason = 'Lost / Unresponsive'
+      updates.loss_reason = null
     }
 
     batch.update(adminDb.collection('crm_lead_overrides').doc(id), updates)

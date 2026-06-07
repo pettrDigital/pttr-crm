@@ -35,21 +35,23 @@ export async function POST(
       return Response.json({ error: 'stage and sub_status required' }, { status: 400 })
     }
 
-    // Auto-translate "CSR Failure" → "Lost / Unresponsive" + requires_csr_review
-    // CSR Failure removed from UI; this catches legacy values, AI classifier, imports
+    // Auto-translate legacy values on write
     let finalSubStatus = sub_status
     let finalLossReason = loss_reason
     let requiresCsrReview = false
+    // CSR Failure → Customer Unresponsive + requires_csr_review
     if (sub_status === 'CSR Failure' || loss_reason === 'CSR Failure') {
-      finalSubStatus = sub_status === 'CSR Failure' ? 'Lost / Unresponsive' : sub_status
-      finalLossReason = loss_reason === 'CSR Failure' ? 'Lost / Unresponsive' : (loss_reason || 'Lost / Unresponsive')
+      finalSubStatus = sub_status === 'CSR Failure' ? 'Customer Unresponsive' : sub_status
+      finalLossReason = loss_reason === 'CSR Failure' ? null : loss_reason
       requiresCsrReview = true
     }
+    // Lost / Unresponsive → Customer Unresponsive
+    if (finalSubStatus === 'Lost / Unresponsive') finalSubStatus = 'Customer Unresponsive'
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: Record<string, any> = {
       opportunity_id: opportunityId,
-      stage: finalSubStatus === 'Lost / Unresponsive' && stage === 'Not Booked' ? stage : stage,
+      stage,
       sub_status: finalSubStatus,
       loss_reason: finalLossReason || null,
       note: note || null,
