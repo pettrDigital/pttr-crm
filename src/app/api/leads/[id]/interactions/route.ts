@@ -150,7 +150,9 @@ export async function GET(
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
-      -- Source 3: email reply threads (RE:/FW: on form conversation threads)
+      -- Source 3: email reply threads (RE:/FW: on form conversations + OHQ threads)
+      -- Two paths: (a) conversation_id match from form emails, (b) phone-in-subject
+      -- match for forwarded OHQ pager threads (Gmail forwards break conversation_id)
       email_thread_replies AS (
         SELECT
           reply.message_id AS interaction_id,
@@ -169,19 +171,31 @@ export async function GET(
           CAST(NULL AS STRING) AS call_id,
           CAST(NULL AS STRING) AS called_did_label
         FROM \`${DS}.raw_emails_received\` reply
-        JOIN (
-          -- Find conversation_ids of the original email forms for this opp
-          SELECT DISTINCT orig.conversation_id
-          FROM \`${DS}.vw_leads_unified\` lu
-          JOIN \`${DS}.raw_emails_received\` orig ON CONCAT('email-', orig.message_id) = lu.lead_id
-          WHERE lu.source_type = 'email'
-            AND (lu.phone IN UNNEST(@phones) OR lu.phone IS NULL)
-            AND lu.lead_timestamp BETWEEN
-              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
-              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
-        ) thread ON reply.conversation_id = thread.conversation_id
         WHERE (reply.subject LIKE 'RE:%' OR reply.subject LIKE 'Re:%'
-          OR reply.subject LIKE 'FW:%' OR reply.subject LIKE 'Fw:%')
+          OR reply.subject LIKE 'FW:%' OR reply.subject LIKE 'Fw:%'
+          OR reply.subject LIKE 'Fwd:%' OR reply.subject LIKE 'fwd:%')
+          AND reply.received_at BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+          AND (
+            -- (a) Conversation thread from email-parsed forms
+            reply.conversation_id IN (
+              SELECT DISTINCT orig.conversation_id
+              FROM \`${DS}.vw_leads_unified\` lu
+              JOIN \`${DS}.raw_emails_received\` orig ON CONCAT('email-', orig.message_id) = lu.lead_id
+              WHERE lu.source_type = 'email'
+                AND (lu.phone IN UNNEST(@phones) OR lu.phone IS NULL)
+                AND lu.lead_timestamp BETWEEN
+                  TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+                  AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+            )
+            -- (b) Phone number in subject (catches forwarded OHQ/pager threads)
+            OR EXISTS (
+              SELECT 1 FROM UNNEST(@phones) AS p
+              WHERE reply.subject LIKE CONCAT('%', REPLACE(p, '+61', '0'), '%')
+                 OR REPLACE(reply.subject, ' ', '') LIKE CONCAT('%', REPLACE(p, '+61', '0'), '%')
+            )
+          )
       ),
       -- Source 4: form submissions as interactions (WC forms + email-parsed forms)
       form_submissions AS (
