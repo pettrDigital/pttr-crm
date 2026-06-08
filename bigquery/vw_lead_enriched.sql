@@ -37,27 +37,30 @@ SELECT
       THEN NULL ELSE INITCAP(TRIM(wc.contact_name)) END, ''),
     NULLIF(o.contact_name, ''),
     NULLIF(tc.client_name, ''),
-    -- Existing-client fallback: resolve name from prior AroFlo jobs matched by phone
-    NULLIF(prior_client.client_name, '')
+    NULLIF(prior_client.client_name, ''),
+    -- OfficeHQ answering-service fallback: extract customer name from pager email
+    NULLIF(INITCAP(TRIM(ohq.ohq_name)), '')
   ) AS contact_name,
   o.phone,
   COALESCE(
     NULLIF(wc.norm_email, ''),
     NULLIF(tc.norm_client_email, ''),
-    NULLIF(prior_client.norm_client_email, '')
+    NULLIF(prior_client.norm_client_email, ''),
+    NULLIF(LOWER(TRIM(ohq.ohq_email)), '')
   ) AS email,
   o.is_existing_customer,
   o.is_no_inbound_enquiry,
 
-  -- Suburb (WC city → AroFlo suburb → task location → form-parsed → prior client)
+  -- Suburb (WC city → AroFlo suburb → task location → form-parsed → prior client → OHQ address)
   COALESCE(
     NULLIF(TRIM(wc.city), ''),
     NULLIF(TRIM(tc.address_suburb), ''),
     NULLIF(TRIM(td.location_suburb), ''),
-    -- Extract suburb from tasklocation_locationname (format: "street, Suburb")
     NULLIF(TRIM(REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*([^,]+)$')), ''),
     ef.form_suburb,
-    NULLIF(TRIM(prior_client.address_suburb), '')
+    NULLIF(TRIM(prior_client.address_suburb), ''),
+    -- Extract suburb from OHQ address (format: "street, Suburb STATE, Country")
+    NULLIF(TRIM(REGEXP_EXTRACT(ohq.ohq_address, r',\s*([A-Za-z ]+)\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)')), '')
   ) AS suburb,
 
   -- Form-specific fields (email-parsed forms only)
@@ -243,4 +246,29 @@ LEFT JOIN (
   )
   WHERE client_name IS NOT NULL AND LOWER(client_name) NOT LIKE '%test%'
     AND LOWER(client_name) NOT IN ('misc cod', 'misc plumbing', 'misc electrical')
-) prior_client ON prior_client.phone = o.phone AND prior_client.rn = 1;
+) prior_client ON prior_client.phone = o.phone AND prior_client.rn = 1
+-- OfficeHQ answering-service email: extract customer name/email/address from pager text.
+-- Matched by phone in body (E.164 or 0-prefix) within 10 min of opportunity timestamp.
+LEFT JOIN (
+  SELECT
+    e.received_at,
+    REGEXP_EXTRACT(e.body_preview, r'(?:PLUMBING\s*-\s*Customer Name|ELECTRICAL\s*Customer Name|(?:Owner or Tenant\)\s*)?Full Name)\s*:\s*([^\r\n]+)') AS ohq_name,
+    CASE
+      WHEN LOWER(TRIM(REGEXP_EXTRACT(e.body_preview, r'Email\s*Address\s*:\s*([^\r\n]+)')))
+        IN ('declined', 'declined.', 'not provided', 'did not obtain - sorry', 'not obtained', '')
+      THEN NULL
+      ELSE REGEXP_EXTRACT(e.body_preview, r'Email\s*Address\s*:\s*([^\r\n]+)')
+    END AS ohq_email,
+    REGEXP_EXTRACT(e.body_preview, r'(?:Full address|Address)\s*:\s*([^\r\n]+)') AS ohq_address,
+    -- Extract phone from Caller ID or Phone field for matching
+    COALESCE(
+      REGEXP_EXTRACT(e.body_preview, r'Caller\s*ID\s*:\s*(\+\d+)'),
+      CONCAT('+61', SUBSTR(REGEXP_REPLACE(REGEXP_EXTRACT(e.body_preview, r'(?:Phone Number|Phone)\s*:\s*([\d\s]+)'), r'\s', ''), 2))
+    ) AS match_phone
+  FROM `pttr-taskdata.ds_crm.raw_emails_received` e
+  WHERE LOWER(e.from_email) LIKE '%myreceptionist%'
+) ohq ON ohq.match_phone = o.phone
+  AND TIMESTAMP(ohq.received_at) BETWEEN
+    TIMESTAMP_SUB(o.opportunity_timestamp, INTERVAL 1 MINUTE)
+    AND TIMESTAMP_ADD(o.opportunity_timestamp, INTERVAL 10 MINUTE)
+  AND ohq.ohq_name IS NOT NULL;
