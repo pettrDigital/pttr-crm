@@ -334,6 +334,9 @@ function LinkJobField({ lead, onLinked }: { lead: Lead; onLinked?: () => void })
                 {candidate.address && <span> — {candidate.address}</span>}
                 {candidate.job_value != null && candidate.job_value > 0 && <span className="font-medium"> — {formatCurrency(candidate.job_value)}</span>}
               </div>
+              {candidate.customer_type === 'Account' && (
+                <div className="text-[11px] text-orange-700 font-medium">Will auto-flag as Account ({candidate.client_name})</div>
+              )}
               <div className="flex gap-2 pt-1">
                 <Button size="sm" onClick={confirm} disabled={saving}>
                   {saving ? 'Linking...' : 'Link this job'}

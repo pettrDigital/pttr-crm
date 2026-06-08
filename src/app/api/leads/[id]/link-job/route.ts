@@ -23,8 +23,10 @@ export async function GET(
       tc.requested_date, tc.display_status, tc.customer_type,
       SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS job_value,
       tc.address_suburb AS suburb,
-      tc.address
+      tc.address,
+      cf.primary_work_type
     FROM \`${DS}.tasks_complete\` tc
+    LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON tc.jobnumber = cf.jobnumber
     WHERE tc.jobnumber = @jobnumber
   `, { jobnumber })
 
@@ -49,22 +51,42 @@ export async function POST(
     return Response.json({ error: 'Invalid job number' }, { status: 400 })
   }
 
-  // Validate exists
+  // Validate exists and fetch account info
   const rows = await query(`
-    SELECT jobnumber FROM \`${DS}.tasks_complete\` WHERE jobnumber = @jobnumber
+    SELECT tc.jobnumber, tc.customer_type, tc.client_name, td.client_clientid
+    FROM \`${DS}.tasks_complete\` tc
+    LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+    WHERE tc.jobnumber = @jobnumber
   `, { jobnumber })
   if (!rows.length) {
     return Response.json({ error: 'Job not found' }, { status: 404 })
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const job = rows[0] as any
+
   // Merge into existing override doc (don't overwrite classification fields)
-  await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
+  const overrideData: Record<string, unknown> = {
     manual_job_number: jobnumber,
     manual_job_linked_at: new Date(),
     manual_job_linked_by: 'admin',
-  }, { merge: true })
+  }
 
-  return Response.json({ ok: true, jobnumber })
+  // Auto-flag as Account when linked job is account-type
+  if (job.customer_type === 'Account') {
+    overrideData.is_account = true
+    overrideData.account_id = job.client_clientid || null
+    overrideData.account_name = job.client_name || null
+    overrideData.exclude_from_analysis = true
+    overrideData.account_flagged_by = 'auto:job_link'
+    overrideData.account_flagged_at = new Date()
+  }
+
+  await adminDb.collection('crm_lead_overrides').doc(opportunityId).set(
+    overrideData, { merge: true }
+  )
+
+  return Response.json({ ok: true, jobnumber, is_account: job.customer_type === 'Account' })
 }
 
 // DELETE: remove the manual job link
