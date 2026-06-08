@@ -47,7 +47,22 @@ export async function GET(
       }
     }
 
-    return Response.json(rows)
+    // Merge job value overrides from Firestore
+    const allRows = rows as Record<string, unknown>[]
+    const jobNumbers = [...new Set(allRows.map(r => r.jobnumber as string).filter(Boolean))]
+    if (jobNumbers.length > 0) {
+      const refs = jobNumbers.map(jn => adminDb.collection('crm_job_value_overrides').doc(jn))
+      const docs = await adminDb.getAll(...refs)
+      for (const doc of docs) {
+        if (doc.exists) {
+          const override = doc.data()!.job_value_override as number
+          const row = allRows.find(r => r.jobnumber === doc.id)
+          if (row) row.task_invoices_total_ex = override
+        }
+      }
+    }
+
+    return Response.json(allRows)
   } catch (error) {
     console.error('Job history error:', error)
     return Response.json([])

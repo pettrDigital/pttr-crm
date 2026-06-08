@@ -542,8 +542,8 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                 const active = convertedJob.job_source === 'active'
                 const bg = active ? 'bg-blue-50' : 'bg-green-50'
                 const txt = active ? 'text-blue-800' : 'text-green-800'
-                const val = convertedJob.task_invoices_total_ex && convertedJob.task_invoices_total_ex > 0
-                  ? formatCurrency(convertedJob.task_invoices_total_ex) : null
+                const jobVal = lead.job_value ?? convertedJob.task_invoices_total_ex
+                const val = jobVal && jobVal > 0 ? formatCurrency(jobVal) : null
                 return (
                   <div className={`border-b ${bg}`}>
                     <div className={`px-5 py-2 text-[13px] flex items-center gap-2`}>
