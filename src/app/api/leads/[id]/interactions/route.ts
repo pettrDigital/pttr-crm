@@ -89,6 +89,11 @@ export async function GET(
             AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
         ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
         WHERE li.lead_id = @wcLeadId AND @wcLeadId IS NOT NULL
+          -- Window to the opportunity's cluster span (±5s before, +30 days after)
+          -- to exclude historical contact-level noise from WC's cross-lead linking
+          AND CAST(li.contact_datetime_sydney AS TIMESTAMP) BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
       -- Source 2: raw_calls by matched_phones (catches direct/untracked)
       phone_calls AS (
