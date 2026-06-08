@@ -260,9 +260,35 @@ GROUP BY r5.comp;
 
 CREATE TEMP TABLE phone_first_job AS
 SELECT phone, MIN(requested_date_parsed) AS first_job_date FROM (
+  -- Client-level phones (already E.164)
   SELECT norm_client_mobile AS phone, requested_date_parsed FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
   UNION ALL
   SELECT id_phone, requested_date_parsed FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE id_phone IS NOT NULL AND id_phone != ''
+  UNION ALL
+  -- Contact-level phones (raw AU format → normalize to E.164)
+  SELECT
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(cd.mobile, r'[^0-9]', ''), 2)) AS phone,
+    tc.requested_date_parsed
+  FROM `pttr-taskdata.ds_aroflo.contacts_deduped` cd
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td ON cd.userid = td.contact_userid
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
+  WHERE cd.mobile IS NOT NULL AND cd.mobile != ''
+    AND REGEXP_REPLACE(cd.mobile, r'[^0-9]', '') LIKE '04%'
+    AND LENGTH(REGEXP_REPLACE(cd.mobile, r'[^0-9]', '')) = 10
+  UNION ALL
+  SELECT
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(cd.phone, r'[^0-9]', ''), 2)) AS phone,
+    tc.requested_date_parsed
+  FROM `pttr-taskdata.ds_aroflo.contacts_deduped` cd
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td ON cd.userid = td.contact_userid
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
+  WHERE cd.phone IS NOT NULL AND cd.phone != ''
+    AND (REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '02%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '03%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '04%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '07%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '08%')
+    AND LENGTH(REGEXP_REPLACE(cd.phone, r'[^0-9]', '')) = 10
 ) GROUP BY phone;
 
 -- ====== STEP 6: Materialize final table ======
