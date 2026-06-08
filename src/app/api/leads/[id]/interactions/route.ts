@@ -145,7 +145,7 @@ export async function GET(
           WHERE operator_name IS NOT NULL AND operator_name != ''
           GROUP BY call_id
         ) rec ON rc.call_id = rec.call_id
-        WHERE rc.norm_caller_phone IN UNNEST(@phones)
+        WHERE (rc.norm_caller_phone IN UNNEST(@phones) OR rc.norm_callee_phone IN UNNEST(@phones))
           AND rc.start_time BETWEEN
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
