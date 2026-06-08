@@ -466,6 +466,17 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
 
   const convertedJob = useMemo(() => {
     if (!lead || !jobHistory?.length) return null
+    // Manual job link: pick that job directly
+    if (lead.manual_job_number) {
+      return jobHistory.find(j => j.jobnumber === lead.manual_job_number) || null
+    }
+    // Auto-linked: pick the primary job from all_jobnumbers
+    if (lead.all_jobnumbers) {
+      const primaryJn = lead.all_jobnumbers.split(',')[0].trim()
+      const match = jobHistory.find(j => j.jobnumber === primaryJn)
+      if (match) return match
+    }
+    // Fallback: closest job within 30 days of lead date
     const ld = new Date(lead.lead_date || lead.lead_datetime)
     if (isNaN(ld.getTime())) return null
     const cut = new Date(ld.getTime() + 30 * 86400000)
