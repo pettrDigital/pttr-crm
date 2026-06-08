@@ -473,69 +473,6 @@ function mapApiTask(api) {
   };
 }
 
-function JobValueOverride({ jobId }) {
-  const [value, setValue] = useState("");
-  const [saved, setSaved] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  React.useEffect(() => {
-    if (!jobId) return;
-    fetch(`/api/jobs/${jobId}/value-override`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && d.job_value_override != null) {
-          setValue(String(d.job_value_override));
-          setSaved(d.job_value_override);
-        }
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-  }, [jobId]);
-
-  async function save() {
-    const num = parseFloat(value);
-    if (isNaN(num) || num < 0) return;
-    setSaving(true);
-    try {
-      const r = await fetch(`/api/jobs/${jobId}/value-override`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_value_override: num }),
-      });
-      if (r.ok) setSaved(num);
-    } finally { setSaving(false); }
-  }
-
-  if (!loaded) return null;
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0" }}>
-      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--ink3)" }}>
-        Job Value Override
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
-        <span style={{ fontSize: 14, color: "var(--ink3)" }}>$</span>
-        <input
-          type="number"
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          placeholder="e.g. 1116"
-          style={{ width: 100, fontSize: 14, fontFamily: "'JetBrains Mono',monospace", border: "1px solid var(--line)", borderRadius: 6, padding: "4px 8px" }}
-        />
-        <button
-          onClick={save}
-          disabled={saving || !value || parseFloat(value) === saved}
-          style={{ fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: 6, border: "none", background: saving ? "#ccc" : "#1D5BBF", color: "#fff", cursor: "pointer", opacity: (!value || parseFloat(value) === saved) ? 0.4 : 1 }}
-        >
-          {saving ? "..." : "Save"}
-        </button>
-        {saved != null && <span style={{ fontSize: 12, color: "#1C7A4A", fontWeight: 500 }}>✓ ${saved.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</span>}
-      </div>
-    </div>
-  );
-}
-
 export default function TaskDetail({ task: taskProp, onBack }) {
   const isDemo = !taskProp;
   const mapped = taskProp ? mapApiTask(taskProp) : null;
@@ -551,6 +488,37 @@ export default function TaskDetail({ task: taskProp, onBack }) {
   const matCost = sum(t.materials, "cost"), matSell = sum(t.materials, "sell");
   const totalCost = labCost + matCost, totalSell = labSell + matSell;
   const done = t.checklist.filter((c) => c.state === "y").length;
+
+  // Job value override
+  const [valueOverride, setValueOverride] = useState(null);
+  const [editingValue, setEditingValue] = useState(false);
+  const [editInput, setEditInput] = useState("");
+  const [valueSaving, setValueSaving] = useState(false);
+
+  React.useEffect(() => {
+    if (!t._jobId) return;
+    fetch(`/api/jobs/${t._jobId}/value-override`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.job_value_override != null) setValueOverride(d.job_value_override); })
+      .catch(() => {});
+  }, [t._jobId]);
+
+  const displayValue = valueOverride != null ? valueOverride : totalSell;
+  const isEstimated = valueOverride != null;
+
+  async function saveValueOverride() {
+    const num = parseFloat(editInput);
+    if (isNaN(num) || num < 0) return;
+    setValueSaving(true);
+    try {
+      const r = await fetch(`/api/jobs/${t._jobId}/value-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_value_override: num }),
+      });
+      if (r.ok) { setValueOverride(num); setEditingValue(false); }
+    } finally { setValueSaving(false); }
+  }
 
   return (
     <div className="td-root">
@@ -641,14 +609,38 @@ export default function TaskDetail({ task: taskProp, onBack }) {
             { Icon: FlagTriangleRight, l: "Priority", v: t.priority },
             { Icon: CalendarClock, l: "Due", v: t.dates.due },
             { Icon: Clock, l: "Progress", v: t.progress + "%" },
-            { Icon: Receipt, l: "Job value (ex GST)", v: totalSell ? money(totalSell) : "—" },
+            { Icon: Receipt, l: "Job value (ex GST)", v: displayValue ? `${money(displayValue)}${isEstimated ? " *" : ""}` : "—", editable: !isDemo && !!t._jobId },
           ].map((s, i) => (
             <div key={i} style={{ padding: "15px 16px", borderRight: i < 3 ? "1px solid var(--line2)" : "none" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
                 <s.Icon size={14} style={{ color: "var(--amber)" }} />
                 <span className="td-label">{s.l}</span>
+                {s.editable && !editingValue && (
+                  <button onClick={() => { setEditInput(String(displayValue || "")); setEditingValue(true); }}
+                    style={{ fontSize: 10, color: "var(--navy)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>
+                    Edit
+                  </button>
+                )}
               </div>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{s.v}</div>
+              {s.editable && editingValue ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>$</span>
+                  <input type="number" value={editInput} onChange={e => setEditInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") saveValueOverride(); if (e.key === "Escape") setEditingValue(false); }}
+                    autoFocus
+                    style={{ width: 80, fontSize: 14, fontFamily: "'JetBrains Mono',monospace", border: "1px solid var(--line)", borderRadius: 4, padding: "2px 6px" }} />
+                  <button onClick={saveValueOverride} disabled={valueSaving}
+                    style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 4, border: "none", background: "#1D5BBF", color: "#fff", cursor: "pointer" }}>
+                    {valueSaving ? "..." : "Save"}
+                  </button>
+                  <button onClick={() => setEditingValue(false)}
+                    style={{ fontSize: 11, padding: "3px 8px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer" }}>
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 15, fontWeight: 600 }}>{s.v}</div>
+              )}
             </div>
           ))}
         </div>
@@ -852,11 +844,6 @@ export default function TaskDetail({ task: taskProp, onBack }) {
               </Section>
             )}
 
-            {!isDemo && t._jobId && (
-              <Section icon={Receipt} title="Job value">
-                <JobValueOverride jobId={t._jobId} />
-              </Section>
-            )}
           </div>
         </div>
       </div>
