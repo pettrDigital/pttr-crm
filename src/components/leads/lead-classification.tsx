@@ -44,6 +44,7 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
       { label: 'Capacity / Scheduling' },
       { label: 'Wanted Quote Over Phone' },
       { label: 'Customer Resolved' },
+      { label: 'PETTR Did Not Respond' },
       { label: 'Other' },
     ],
   },
