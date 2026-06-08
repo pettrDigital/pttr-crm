@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import {
   Sheet,
   SheetContent,
@@ -43,7 +43,19 @@ interface LeadDetailModalProps {
   canPrev?: boolean; canNext?: boolean; position?: string
   onJobLinked?: (opportunityId: string) => void
   onLeadUpdate?: () => void
+  adjacentLeadIds?: { prev?: string; next?: string }
 }
+
+// ─── LEAD DATA CACHE ──────────────────────────────────────────────────────
+
+interface CachedLeadData {
+  interactions: LeadInteraction[]
+  jobHistory: JobHistory[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  notes: any[]
+}
+
+const leadCache = new Map<string, CachedLeadData>()
 
 function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
   const t = type?.toLowerCase() ?? ''
@@ -544,7 +556,7 @@ function ProfileToggle({ lead, onUpdate }: { lead: Lead; onUpdate?: () => void }
 
 // ─── MAIN COMPONENT ─────────────────────────────────────────────────────────
 
-export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position, onJobLinked, onLeadUpdate }: LeadDetailModalProps) {
+export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position, onJobLinked, onLeadUpdate, adjacentLeadIds }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
   const [loading, setLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -556,6 +568,37 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
   const [notes, setNotes] = useState<any[]>([])
   const [notesLoading, setNotesLoading] = useState(false)
   const [expandedIx, setExpandedIx] = useState<Set<string>>(new Set())
+  const prefetchingRef = useRef<Set<string>>(new Set())
+
+  // Fetch all three data sources for a lead, with cache
+  const fetchLeadData = useCallback(async (leadId: string, opts?: { background?: boolean }) => {
+    if (leadCache.has(leadId)) return leadCache.get(leadId)!
+    if (opts?.background && prefetchingRef.current.has(leadId)) return null
+    if (opts?.background) prefetchingRef.current.add(leadId)
+
+    const [ixRes, jhRes, nRes] = await Promise.all([
+      authFetch(`/api/leads/${leadId}/interactions`).then(r => r.json()).then(r => Array.isArray(r) ? r : []),
+      authFetch(`/api/leads/${leadId}/job-history`).then(r => r.json()).then((d: unknown) => Array.isArray(d) ? d : []),
+      authFetch(`/api/leads/${leadId}/notes`).then(r => r.json()).then((d: unknown) => Array.isArray(d) ? d : []),
+    ])
+
+    const cached: CachedLeadData = { interactions: ixRes, jobHistory: jhRes, notes: nRes }
+    leadCache.set(leadId, cached)
+    if (opts?.background) prefetchingRef.current.delete(leadId)
+
+    // Cap cache at 20 entries
+    if (leadCache.size > 20) {
+      const first = leadCache.keys().next().value
+      if (first) leadCache.delete(first)
+    }
+
+    return cached
+  }, [])
+
+  // Invalidate cache for a lead (after mutations like job link, classification)
+  const invalidateCache = useCallback((leadId: string) => {
+    leadCache.delete(leadId)
+  }, [])
 
   // Auto-mark as reviewed when opened (clears needs-review flag)
   useEffect(() => {
@@ -569,34 +612,48 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
     onClassify?.(lead.lead_id, lead.funnel_stage || 'Captured', lead.sub_status || lead.funnel_stage || 'Captured')
   }, [lead?.lead_id, open]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Load current lead data (from cache or fetch) + prefetch adjacent
+  const leadId = lead?.lead_id
   useEffect(() => {
-    if (!lead || !open) {
+    if (!leadId || !open) {
       setInteractions([]); setJobHistory([]); setNoteOpen(false); setExpandedIx(new Set())
       return
     }
-    async function fetchInteractions() {
-      setLoading(true)
-      const res = await authFetch(`/api/leads/${lead!.lead_id}/interactions`)
-      const data: LeadInteraction[] = await res.json().then(r => Array.isArray(r) ? r : [])
-      setInteractions(data)
-      // Auto-expand the most recent interaction
-      if (data.length > 0) setExpandedIx(new Set([data[0].interaction_id || data[0].call_id || '0']))
-      setLoading(false)
+    let cancelled = false
+
+    async function load() {
+      // Check cache first for instant display
+      const cached = leadCache.get(leadId!)
+      if (cached) {
+        setInteractions(cached.interactions)
+        setJobHistory(cached.jobHistory)
+        setNotes(cached.notes)
+        if (cached.interactions.length > 0) {
+          setExpandedIx(new Set([cached.interactions[0].interaction_id || cached.interactions[0].call_id || '0']))
+        }
+        setLoading(false)
+        setJobHistoryLoading(false)
+        setNotesLoading(false)
+      } else {
+        setLoading(true); setJobHistoryLoading(true); setNotesLoading(true)
+        const data = await fetchLeadData(leadId!)
+        if (cancelled || !data) return
+        setInteractions(data.interactions)
+        setJobHistory(data.jobHistory)
+        setNotes(data.notes)
+        if (data.interactions.length > 0) {
+          setExpandedIx(new Set([data.interactions[0].interaction_id || data.interactions[0].call_id || '0']))
+        }
+        setLoading(false); setJobHistoryLoading(false); setNotesLoading(false)
+      }
+
+      // Prefetch adjacent leads in background
+      if (adjacentLeadIds?.next) fetchLeadData(adjacentLeadIds.next, { background: true }).catch(() => {})
+      if (adjacentLeadIds?.prev) fetchLeadData(adjacentLeadIds.prev, { background: true }).catch(() => {})
     }
-    async function fetchJobHistory() {
-      setJobHistoryLoading(true)
-      const r = await authFetch(`/api/leads/${lead!.lead_id}/job-history`)
-      setJobHistory(await r.json().then((d: unknown) => Array.isArray(d) ? d : []))
-      setJobHistoryLoading(false)
-    }
-    async function fetchNotes() {
-      setNotesLoading(true)
-      const r = await authFetch(`/api/leads/${lead!.lead_id}/notes`)
-      setNotes(await r.json().then((d: unknown) => Array.isArray(d) ? d : []))
-      setNotesLoading(false)
-    }
-    fetchInteractions(); fetchJobHistory(); fetchNotes()
-  }, [lead, open])
+    load()
+    return () => { cancelled = true }
+  }, [leadId, open, adjacentLeadIds, fetchLeadData]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleIx = useCallback((id: string) => {
     setExpandedIx(prev => {
@@ -763,21 +820,24 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
 
               {/* Link WC Lead (for no_inbound / direct_booking opps) */}
               <LinkWcLeadField lead={lead} onLinked={() => {
-                // Re-fetch interactions (now linked via WC) and notify parent
-                authFetch(`/api/leads/${lead.lead_id}/interactions`)
-                  .then(r => r.json()).then((d: unknown) => {
-                    const data = Array.isArray(d) ? d : []
-                    setInteractions(data)
-                    if (data.length > 0) setExpandedIx(new Set([data[0].interaction_id || data[0].call_id || '0']))
-                  })
+                invalidateCache(lead.lead_id)
+                fetchLeadData(lead.lead_id).then(data => {
+                  if (!data) return
+                  setInteractions(data.interactions)
+                  setJobHistory(data.jobHistory)
+                  setNotes(data.notes)
+                  if (data.interactions.length > 0) setExpandedIx(new Set([data.interactions[0].interaction_id || data.interactions[0].call_id || '0']))
+                })
                 onLeadUpdate?.()
               }} />
 
               {/* Link Job */}
               <LinkJobField lead={lead} onLinked={() => {
-                // Re-fetch job history and notify parent to re-fetch lead data
-                authFetch(`/api/leads/${lead.lead_id}/job-history`)
-                  .then(r => r.json()).then((d: unknown) => setJobHistory(Array.isArray(d) ? d : []))
+                invalidateCache(lead.lead_id)
+                fetchLeadData(lead.lead_id).then(data => {
+                  if (!data) return
+                  setJobHistory(data.jobHistory)
+                })
                 onJobLinked?.(lead.lead_id)
               }} />
 
@@ -864,7 +924,11 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                         setSaving(true)
                         await authFetch(`/api/leads/${lead.lead_id}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note_text: noteText.trim() }) })
                         setNoteText('')
-                        const r = await authFetch(`/api/leads/${lead.lead_id}/notes`); setNotes(await r.json())
+                        invalidateCache(lead.lead_id)
+                        const r = await authFetch(`/api/leads/${lead.lead_id}/notes`); const freshNotes = await r.json(); setNotes(freshNotes)
+                        // Update cache with fresh notes
+                        const existing = leadCache.get(lead.lead_id)
+                        if (existing) leadCache.set(lead.lead_id, { ...existing, notes: freshNotes })
                         setSaving(false)
                       }}>{saving ? 'Saving...' : 'Save'}</Button>
                     </div>

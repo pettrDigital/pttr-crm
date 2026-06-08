@@ -73,6 +73,15 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
   // Current position for disabling arrows
   const currentIndex = selectedLead ? filteredLeads.findIndex(l => l.lead_id === selectedLead.lead_id) : -1
 
+  // Adjacent lead IDs for prefetching
+  const adjacentLeadIds = useMemo(() => {
+    if (currentIndex < 0) return undefined
+    return {
+      prev: currentIndex > 0 ? filteredLeads[currentIndex - 1].lead_id : undefined,
+      next: currentIndex < filteredLeads.length - 1 ? filteredLeads[currentIndex + 1].lead_id : undefined,
+    }
+  }, [currentIndex, filteredLeads])
+
   return (
     <>
       <LeadsTable
@@ -93,6 +102,7 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
         position={currentIndex >= 0 ? `${currentIndex + 1} / ${filteredLeads.length}` : undefined}
         onJobLinked={handleJobLinked}
         onLeadUpdate={handleJobLinked}
+        adjacentLeadIds={adjacentLeadIds}
       />
     </>
   )
