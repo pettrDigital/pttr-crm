@@ -347,11 +347,26 @@ export async function getJobHistory(opportunityId: string) {
              STRING_AGG(CONCAT(COALESCE(dateposted, ''), ' — ', COALESCE(username, ''), ': ', COALESCE(note_clean, '')), '\\n' ORDER BY dateposted DESC) AS task_notes
       FROM \`pttr-taskdata.ds_aroflo.task_notes_deduped\`
       GROUP BY jobnumber
+    ),
+    labour_notes_agg AS (
+      SELECT task_jobnumber AS jobnumber,
+        ARRAY_AGG(note ORDER BY workdate DESC LIMIT 1)[OFFSET(0)] AS labour_note
+      FROM (
+        SELECT task_jobnumber, note, workdate,
+          ROW_NUMBER() OVER (PARTITION BY task_jobnumber, lineid ORDER BY workdate DESC) AS rn
+        FROM \`pttr-taskdata.ds_aroflo.tasklabours_raw\`
+        WHERE note IS NOT NULL AND TRIM(note) != ''
+          AND (deleted IS NULL OR deleted != 'true')
+      )
+      WHERE rn = 1
+      GROUP BY task_jobnumber
     )
-    SELECT aj.*, cf.primary_work_type, tn.task_notes
+    SELECT aj.*, cf.primary_work_type,
+      COALESCE(tn.task_notes, ln.labour_note) AS task_notes
     FROM all_jobs aj
     LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON aj.jobnumber = cf.jobnumber
     LEFT JOIN task_notes_agg tn ON aj.jobnumber = tn.jobnumber
+    LEFT JOIN labour_notes_agg ln ON aj.jobnumber = ln.jobnumber
     ORDER BY aj.requested_date DESC
     LIMIT 50
   `, { opportunityId })
