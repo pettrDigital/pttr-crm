@@ -1,7 +1,154 @@
--- vw_lead_enriched v3: lean read surface
+-- vw_lead_enriched v4: lean read surface + revenue model
 -- answered = raw_calls.answered (call connected), captured = answered AND duration>=20s
+-- Revenue model: three fields per job (invoiced_amount / estimated_sales / revenue),
+-- cluster-summed to opportunity grain. Per-job ladder applied FIRST, then summed.
 -- classification fields all NULL (populated later by 836-import + AI + Firestore)
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_lead_enriched` AS
+
+-- ====== INV NOTE PARSER (Option A: sum distinct invoice numbers) ======
+-- Frances's template: "INV {n} ${X.XX} incl GST - Paid {method}"
+-- Parse INV number, take max amount per distinct invoice (collapses partial-payment
+-- lines), sum across distinct invoices (handles multi-invoice jobs). ÷1.1 for ex-GST.
+WITH inv_parsed AS (
+  SELECT
+    n.jobnumber,
+    REGEXP_EXTRACT(n.note_clean, r'(?i)(?:part\s+)?inv\s*(\d{6,8})') AS inv_number,
+    SAFE_CAST(REPLACE(REGEXP_EXTRACT(n.note_clean,
+      r'(?i)(?:part\s+)?inv\s*\d{6,8}\s+\$\s*(\d[\d,]*\.\d{2})\s+incl\s+gst'), ',', '') AS FLOAT64) AS inv_incl
+  FROM `pttr-taskdata.ds_aroflo.task_notes_deduped` n
+  WHERE REGEXP_CONTAINS(LOWER(n.note_clean), r'inv\s*\d{6,8}\s+\$')
+    AND REGEXP_CONTAINS(LOWER(n.note_clean), r'incl\s+gst')
+),
+inv_per_invoice AS (
+  SELECT jobnumber, inv_number, MAX(inv_incl) AS inv_max_incl
+  FROM inv_parsed
+  WHERE inv_incl > 0
+  GROUP BY jobnumber, inv_number
+),
+inv_per_job AS (
+  SELECT jobnumber, ROUND(SUM(inv_max_incl) / 1.1, 2) AS inv_note_ex
+  FROM inv_per_invoice
+  GROUP BY jobnumber
+),
+
+-- ====== LABOUR NOTE PARSER (keyword-anchored, ex-GST) ======
+-- Tech labour notes: "$X+gst" / "$X plus gst". Amount is already ex-GST.
+-- Keyword-anchor: pick amount adjacent to collected/paid/banked/eft/cash/card.
+-- Fix space-broken numbers ("$13 84" → "$1384"). Exclude <$50. Latest workdate.
+labour_notes_fixed AS (
+  SELECT
+    task_jobnumber AS jobnumber,
+    workdate,
+    endtime,
+    -- Fix space-broken numbers: "$13 84" → "$1384"
+    REGEXP_REPLACE(note, r'\$(\d{1,2})\s(\d{2,3})', '$\\1\\2') AS note_fixed
+  FROM `pttr-taskdata.ds_aroflo.tasklabours_raw`
+  WHERE REGEXP_CONTAINS(LOWER(note), r'\+\s*gst|plus\s*gst')
+    AND REGEXP_CONTAINS(note, r'\$\s*\d')
+),
+labour_parsed AS (
+  SELECT jobnumber, workdate, endtime,
+    COALESCE(
+      -- 1. "collected/paid/banked {0-3 words} $X +gst"
+      SAFE_CAST(REPLACE(REGEXP_EXTRACT(note_fixed,
+        r'(?i)(?:collected|paid|banked)\s+(?:\w+\s+){0,3}\$\s*(\d[\d,]*\.?\d{0,2})\s*(?:\+\s*gst|plus\s*gst)')
+        , ',', '') AS FLOAT64),
+      -- 2. "$X+gst eft/cash/card" (amount followed by payment method)
+      SAFE_CAST(REPLACE(REGEXP_EXTRACT(note_fixed,
+        r'(?i)\$\s*(\d[\d,]*\.?\d{0,2})\s*(?:\+\s*gst|plus\s*gst)\s+(?:eft|cash|card|visa|cc|mc|mastercard|amex)')
+        , ',', '') AS FLOAT64),
+      -- 3. Last "$X+gst" in note (techs write quotes first, collected last)
+      SAFE_CAST(REPLACE(REGEXP_EXTRACT(note_fixed,
+        r'(?i).*\$\s*(\d[\d,]*\.?\d{0,2})\s*(?:\+\s*gst|plus\s*gst)')
+        , ',', '') AS FLOAT64)
+    ) AS labour_amount
+  FROM labour_notes_fixed
+),
+labour_ranked AS (
+  SELECT jobnumber, labour_amount,
+    ROW_NUMBER() OVER (PARTITION BY jobnumber ORDER BY workdate DESC, endtime DESC) AS rn
+  FROM labour_parsed
+  WHERE labour_amount >= 50
+),
+labour_per_job AS (
+  SELECT jobnumber, labour_amount FROM labour_ranked WHERE rn = 1
+),
+
+-- ====== MULTI-VISIT FLAG (labour notes with 2+ distinct work dates) ======
+labour_multi_visit AS (
+  SELECT task_jobnumber AS jobnumber, TRUE AS is_multi_visit
+  FROM `pttr-taskdata.ds_aroflo.tasklabours_raw`
+  WHERE REGEXP_CONTAINS(LOWER(note), r'\+\s*gst|plus\s*gst')
+    AND REGEXP_CONTAINS(note, r'\$\s*\d')
+  GROUP BY task_jobnumber
+  HAVING COUNT(DISTINCT workdate) > 1
+),
+
+-- ====== PER-JOB REVENUE MODEL ======
+-- Applied per job FIRST, then cluster-summed to opportunity.
+-- Trust order: invoiced_amount > inv_note > labour_note
+-- revenue = COALESCE(NULLIF(invoiced, 0), estimate)
+job_revenue AS (
+  SELECT
+    tc.jobnumber,
+    SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS invoiced_amount,
+    CASE
+      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN NULL
+      WHEN inv.inv_note_ex > 0 THEN inv.inv_note_ex
+      WHEN lab.labour_amount >= 50 THEN lab.labour_amount
+      ELSE NULL
+    END AS estimated_sales,
+    CASE
+      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN NULL
+      WHEN inv.inv_note_ex > 0 THEN 'inv_note'
+      WHEN lab.labour_amount >= 50 THEN 'labour_note'
+      ELSE NULL
+    END AS revenue_source,
+    COALESCE(
+      NULLIF(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0),
+      inv.inv_note_ex,
+      CASE WHEN lab.labour_amount >= 50 THEN lab.labour_amount END
+    ) AS revenue,
+    CASE
+      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN 'invoiced'
+      WHEN inv.inv_note_ex > 0 THEN 'inv_note'
+      WHEN lab.labour_amount >= 50 THEN 'labour_note'
+      ELSE 'pending'
+    END AS revenue_basis,
+    COALESCE(mv.is_multi_visit, FALSE) AS multi_visit_flag
+  FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+  LEFT JOIN inv_per_job inv ON tc.jobnumber = inv.jobnumber
+  LEFT JOIN labour_per_job lab ON tc.jobnumber = lab.jobnumber
+  LEFT JOIN labour_multi_visit mv ON tc.jobnumber = mv.jobnumber
+  WHERE tc.customer_type = 'COD'
+),
+
+-- ====== CLUSTER-SUM: aggregate per-job revenue to opportunity ======
+-- For multi-job clusters, each job contributes at its own basis.
+-- E.g. 1 invoiced job + 1 labour-note job = sum of each.
+cluster_revenue AS (
+  SELECT
+    o2.opportunity_id,
+    ROUND(SUM(COALESCE(jr.invoiced_amount, 0)), 2) AS cluster_invoiced_amount,
+    ROUND(SUM(COALESCE(jr.estimated_sales, 0)), 2) AS cluster_estimated_sales,
+    ROUND(SUM(COALESCE(jr.revenue, 0)), 2) AS cluster_revenue,
+    -- revenue_basis: if ANY job is invoiced → 'invoiced'; else highest-trust estimate
+    CASE
+      WHEN LOGICAL_OR(jr.revenue_basis = 'invoiced') THEN 'invoiced'
+      WHEN LOGICAL_OR(jr.revenue_basis = 'inv_note') THEN 'inv_note'
+      WHEN LOGICAL_OR(jr.revenue_basis = 'labour_note') THEN 'labour_note'
+      ELSE 'pending'
+    END AS cluster_revenue_basis,
+    LOGICAL_OR(jr.multi_visit_flag) AS cluster_multi_visit_flag,
+    LOGICAL_OR(tc2.job_status = 'Completed') AS any_completed
+  FROM `pttr-taskdata.ds_crm.opportunities` o2,
+    UNNEST(SPLIT(o2.all_jobnumbers, ',')) AS jn
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc2 ON TRIM(jn) = tc2.jobnumber
+  LEFT JOIN job_revenue jr ON TRIM(jn) = jr.jobnumber
+  WHERE o2.job_count > 1
+  GROUP BY o2.opportunity_id
+)
+
 SELECT
   -- === Identity ===
   o.opportunity_id,
@@ -103,22 +250,45 @@ SELECT
   o.all_jobnumbers,
   o.job_count,
   CASE WHEN o.jobnumber IS NOT NULL THEN 'Booked' ELSE 'Not Booked' END AS booking_status,
-  -- job_value: sum across ALL jobs in the cluster (multi-job), else primary job
-  COALESCE(all_jobs.total_value, SAFE_CAST(tc.task_invoices_total_ex AS NUMERIC)) AS job_value,
+
+  -- === Revenue model (per-job ladder applied first, then cluster-summed) ===
+  -- invoiced_amount: task_invoices_total_ex, cluster-summed. The truth; never overwritten.
+  COALESCE(cr.cluster_invoiced_amount,
+    SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64)) AS invoiced_amount,
+  -- estimated_sales: note-bridge value when not yet invoiced (inv_note or labour_note).
+  COALESCE(cr.cluster_estimated_sales,
+    pj_rev.estimated_sales) AS estimated_sales,
+  -- revenue (derived reporting field): invoiced wins, else estimate, else null.
+  -- This is the field all economics (ROAS/profit/avg ticket) should read.
+  COALESCE(cr.cluster_revenue,
+    pj_rev.revenue) AS revenue,
+  -- revenue_basis: invoiced / inv_note / labour_note / override / pending
+  COALESCE(cr.cluster_revenue_basis,
+    pj_rev.revenue_basis, 'pending') AS revenue_basis,
+  -- revenue_source: NULL when invoiced (no estimate needed), else source tag
+  pj_rev.revenue_source,
+  -- multi_visit_flag: TRUE when labour note may capture partial (2+ work dates)
+  COALESCE(cr.cluster_multi_visit_flag,
+    pj_rev.multi_visit_flag, FALSE) AS multi_visit_flag,
+  -- job_value: backward-compatible field = revenue (cluster-summed)
+  COALESCE(cr.cluster_revenue,
+    pj_rev.revenue) AS job_value,
+
   o.job_status,
   -- completed: TRUE if ANY job in the cluster is Completed (Archived or not)
   CASE
-    WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN TRUE
+    WHEN o.job_count > 1 AND COALESCE(cr.any_completed, FALSE) THEN TRUE
     WHEN o.job_count <= 1 AND tc.job_status = 'Completed' THEN TRUE
     WHEN o.jobnumber IS NOT NULL THEN FALSE
     ELSE NULL
   END AS completed,
 
   -- === Objective funnel stage ===
+  -- Uses revenue (which includes estimates) for Paid Job detection
   CASE
-    WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN 'Paid Job'
+    WHEN o.job_count > 1 AND COALESCE(cr.any_completed, FALSE) THEN 'Paid Job'
     WHEN o.job_count <= 1 AND tc.job_status = 'Completed'
-      AND SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) > 0 THEN 'Paid Job'
+      AND COALESCE(pj_rev.revenue, 0) > 0 THEN 'Paid Job'
     WHEN o.job_count <= 1 AND tc.job_status = 'Completed' THEN 'Job Complete'
     WHEN o.jobnumber IS NOT NULL THEN 'Booked'
     WHEN o.call_count > 0 AND o.has_answered_call AND o.max_duration_sec >= 20 THEN 'Captured'
@@ -183,17 +353,10 @@ LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
   ON o.jobnumber = tc.jobnumber
 LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
   ON o.jobnumber = td.jobnumber
--- Aggregate across ALL jobs in multi-job clusters
-LEFT JOIN (
-  SELECT o2.opportunity_id,
-    ROUND(SUM(SAFE_CAST(tc2.task_invoices_total_ex AS NUMERIC)), 2) AS total_value,
-    LOGICAL_OR(tc2.job_status = 'Completed') AS any_completed
-  FROM `pttr-taskdata.ds_crm.opportunities` o2,
-    UNNEST(SPLIT(o2.all_jobnumbers, ',')) AS jn
-  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc2 ON TRIM(jn) = tc2.jobnumber
-  WHERE o2.job_count > 1
-  GROUP BY o2.opportunity_id
-) all_jobs ON o.opportunity_id = all_jobs.opportunity_id
+-- Per-job revenue model (single-job opps)
+LEFT JOIN job_revenue pj_rev ON o.jobnumber = pj_rev.jobnumber
+-- Cluster-summed revenue (multi-job opps): per-job ladder applied first, then summed
+LEFT JOIN cluster_revenue cr ON o.opportunity_id = cr.opportunity_id
 -- Operator: first answering agent on the opportunity's earliest call
 -- Join raw_calls by phone + timestamp (opportunity_timestamp = first call's start_time for call-first opps)
 LEFT JOIN `pttr-taskdata.ds_crm.raw_calls` first_rc
