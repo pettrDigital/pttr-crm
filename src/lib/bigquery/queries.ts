@@ -146,16 +146,14 @@ export async function getCallDetail(leadId: number, dt: string) {
            + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
         ELSE NULL
       END AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, ale.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
-      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+      JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
     JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
     LEFT JOIN \`${DS}.call_transcripts\` ct ON li.call_id = ct.call_id
     LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON li.lead_id = ale.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
@@ -217,10 +215,11 @@ export async function getCallDetail(leadId: number, dt: string) {
            + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
         ELSE NULL
       END AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, ale.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
-      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+      JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON li.lead_id = ale.lead_id
     LEFT JOIN \`${DS}.raw_calls\` rc
       ON rc.caller = li.contact_to
       AND rc.start_time BETWEEN
@@ -228,9 +227,6 @@ export async function getCallDetail(leadId: number, dt: string) {
         AND TIMESTAMP_ADD(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
     LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
     LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
@@ -475,16 +471,14 @@ export async function getJobCallDetail(callId: string) {
            + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
         ELSE NULL
       END AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, ale.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_gcs_uri,
-      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+      JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
     JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
     LEFT JOIN \`${DS}.call_transcripts\` ct ON li.call_id = ct.call_id
     LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON li.lead_id = ale.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
@@ -526,10 +520,11 @@ export async function getJobCallDetail(callId: string) {
            + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
         ELSE NULL
       END AS duration_seconds,
-      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(ct.full_transcript, li.contact_content, ale.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_gcs_uri,
-      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+      JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
     FROM \`${DS}.lead_interactions\` li
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON li.lead_id = ale.lead_id
     LEFT JOIN \`${DS}.raw_calls\` rc
       ON rc.caller = li.contact_to
       AND rc.start_time BETWEEN
@@ -537,9 +532,6 @@ export async function getJobCallDetail(callId: string) {
         AND TIMESTAMP_ADD(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
     LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
     LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
              ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn

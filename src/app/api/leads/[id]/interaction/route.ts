@@ -49,14 +49,13 @@ export async function GET(
             ELSE NULL
           END AS transcript_source,
           rr.gcs_uri AS recording_url,
-          COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+          JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
         FROM \`${DS}.raw_calls\` rc
         LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
         LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
         LEFT JOIN \`${DS}.lead_interactions\` li ON rc.call_id = li.call_id
         LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
           ON li.lead_id IS NOT NULL AND CAST(li.lead_id AS INT64) = ale.lead_id
-          AND ale.call_transcription IS NOT NULL
         LEFT JOIN (
           SELECT parent_call_id, callee_name,
             ROW_NUMBER() OVER (PARTITION BY parent_call_id
@@ -74,8 +73,6 @@ export async function GET(
           WHERE operator_name IS NOT NULL AND operator_name != ''
           GROUP BY call_id
         ) rec ON rc.call_id = rec.call_id
-        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
         WHERE rc.call_id = @callId
         LIMIT 1
       `, { callId })
@@ -97,12 +94,10 @@ export async function GET(
             ELSE NULL
           END AS transcript_source,
           CAST(NULL AS STRING) AS recording_url,
-          COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+          JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
         FROM \`${DS}.lead_interactions\` li
         LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
           ON CAST(li.lead_id AS INT64) = ale.lead_id
-        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
-        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
         WHERE li.call_id = @callId
         LIMIT 1
       `, { callId })
