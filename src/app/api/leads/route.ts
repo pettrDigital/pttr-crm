@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   if (manualJobNumbers.length > 0) {
     const jobRows = await query(`
       SELECT tc.jobnumber, tc.client_name, tc.task_type, tc.status, tc.job_status, tc.display_status,
-        SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS job_value, tc.customer_type,
+        COALESCE(ji.invoiced_total_ex, 0) AS job_value, tc.customer_type,
         tc.norm_client_email,
         COALESCE(
           NULLIF(TRIM(tc.address_suburb), ''),
@@ -65,6 +65,7 @@ export async function GET(request: Request) {
         ) AS suburb
       FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` ji ON tc.jobnumber = ji.jobnumber
       WHERE tc.jobnumber IN UNNEST(@jobnumbers)
     `, { jobnumbers: manualJobNumbers })
     for (const row of jobRows) {

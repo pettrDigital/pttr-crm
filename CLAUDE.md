@@ -565,8 +565,10 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
   multi-invoice jobs (carried one invoice, not the net). Revenue now uses
   `ds_aroflo.vw_job_invoiced` which sums line-level invoices from
   `invoices_deduped` (status IN 'processed','approved'). 69 jobs corrected,
-  +$109K net. App code (queries.ts, route.ts) still reads `task_invoices_total_ex`
-  directly for job detail display — these should migrate to the view.
+  +$109K net. All consumers migrated: vw_lead_enriched, queries.ts, route.ts,
+  link-job, job-history, ai-classify-validate. The column alias
+  `task_invoices_total_ex` is retained in query output for UI compatibility
+  but now reads from `vw_job_invoiced`, not the broken AroFlo field.
 - **Labour note parser outliers**: ~10% of matches on multi-visit jobs capture
   one visit's collection, not the full total. `multi_visit_flag` marks these.
   Not fixable without summing across visits (which double-counts when the

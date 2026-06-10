@@ -303,7 +303,7 @@ export async function getJobHistory(opportunityId: string) {
         )
     ),
     completed_jobs AS (
-      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, ji.invoiced_total_ex AS task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
              COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
              td.description,
@@ -311,17 +311,19 @@ export async function getJobHistory(opportunityId: string) {
       FROM job_numbers jn
       JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc ON jn.jobnumber = tc.jobnumber
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` ji ON tc.jobnumber = ji.jobnumber
     ),
     -- Existing-client prior jobs: find all COD jobs by phone for returning customers
     -- (regardless of whether the current opp already has a linked job)
     prior_client_jobs AS (
-      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, ji.invoiced_total_ex AS task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
              COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
              td.description,
              SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
       FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` ji ON tc.jobnumber = ji.jobnumber
       WHERE tc.customer_type = 'COD'
         AND tc.jobnumber NOT IN (SELECT jobnumber FROM job_numbers)
         AND EXISTS (

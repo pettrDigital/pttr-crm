@@ -21,11 +21,12 @@ export async function GET(
   const rows = await query(`
     SELECT tc.jobnumber, tc.client_name, tc.task_type, tc.status, tc.job_status,
       tc.requested_date, tc.display_status, tc.customer_type,
-      SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS job_value,
+      COALESCE(ji.invoiced_total_ex, 0) AS job_value,
       tc.address_suburb AS suburb,
       tc.address,
       cf.primary_work_type
     FROM \`${DS}.tasks_complete\` tc
+    LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` ji ON tc.jobnumber = ji.jobnumber
     LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON tc.jobnumber = cf.jobnumber
     WHERE tc.jobnumber = @jobnumber
   `, { jobnumber })

@@ -27,7 +27,7 @@ export async function GET(
       // Fetch the manual job and prepend it
       const manualRows = await query(`
         SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status,
-          tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+          ji.invoiced_total_ex AS task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
           COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, '')) AS job_address,
           tc.address_suburb AS job_suburb,
           td.description,
@@ -36,6 +36,7 @@ export async function GET(
           CAST(NULL AS STRING) AS task_notes
         FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
         LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+        LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` ji ON tc.jobnumber = ji.jobnumber
         LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON tc.jobnumber = cf.jobnumber
         WHERE tc.jobnumber = @jobnumber
       `, { jobnumber: manualJn })
