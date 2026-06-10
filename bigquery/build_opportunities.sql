@@ -230,7 +230,21 @@ SELECT r5.comp,
     s.attribution_source, s.wc_lead_id, s.channel, s.source, s.medium,
     s.campaign, s.keyword, s.profile, s.tracking_number, s.direct_subtype,
     s.call_outcome, s.answered, s.contact_name
-  ) ORDER BY s.event_ts LIMIT 1)[OFFSET(0)] AS first_event
+  ) ORDER BY s.event_ts LIMIT 1)[OFFSET(0)] AS first_event,
+  -- All WC-linked events in the cluster (lossless record)
+  ARRAY_AGG(
+    IF(s.wc_lead_id IS NOT NULL,
+      STRUCT(
+        s.wc_lead_id,
+        s.source,
+        s.medium,
+        s.keyword,
+        s.campaign,
+        s.channel,
+        s.event_ts
+      ), NULL)
+    IGNORE NULLS ORDER BY s.event_ts
+  ) AS wc_leads
 FROM r5
 JOIN spine_events s ON r5.eid = CONCAT('S-', s.event_id)
 GROUP BY r5.comp;
@@ -324,7 +338,10 @@ SELECT
   cs.first_event.campaign,
   cs.first_event.keyword,
   cs.first_event.profile,
-  cs.first_event.wc_lead_id,
+  -- Primary WC lead: first-touch among WC-linked events (swappable derivation)
+  cs.wc_leads[SAFE_OFFSET(0)].wc_lead_id AS wc_lead_id,
+  -- Full set of WC leads in this cluster (lossless)
+  cs.wc_leads,
   cs.first_event.direct_subtype,
   cs.first_event.queue_ext,
   cs.first_event.queue_name,

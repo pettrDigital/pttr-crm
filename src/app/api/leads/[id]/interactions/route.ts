@@ -15,7 +15,8 @@ export async function GET(
   try {
     // Resolve the opportunity's contact points
     const [opp] = await query(`
-      SELECT matched_phones, matched_emails, wc_lead_id, opportunity_timestamp
+      SELECT matched_phones, matched_emails, wc_lead_id, opportunity_timestamp,
+        ARRAY(SELECT wl.wc_lead_id FROM UNNEST(wc_leads) wl) AS all_wc_lead_ids
       FROM \`${DS}.opportunities\`
       WHERE opportunity_id = @opportunityId
     `, { opportunityId })
@@ -26,15 +27,18 @@ export async function GET(
     const oppData = opp as any
     const phones = (oppData.matched_phones as string || '').split(',').map((p: string) => p.trim()).filter(Boolean)
 
-    // Check for manual WC lead link in Firestore (overrides native wc_lead_id)
-    let wc_lead_id = oppData.wc_lead_id
+    // Collect all WC lead IDs: from the opportunity array + any manual Firestore override
+    const wcLeadIds: number[] = [...(oppData.all_wc_lead_ids || [])].filter(Boolean)
     try {
       const overrideDoc = await adminDb.collection('crm_lead_overrides').doc(opportunityId).get()
       if (overrideDoc.exists) {
         const manualWc = overrideDoc.data()?.manual_wc_lead_id
-        if (manualWc != null) wc_lead_id = manualWc
+        if (manualWc != null && !wcLeadIds.includes(manualWc)) wcLeadIds.push(manualWc)
       }
-    } catch {} // non-fatal — fall back to native wc_lead_id
+    } catch {} // non-fatal
+
+    // Primary WC lead for backward-compatible single-value usage
+    const wc_lead_id = wcLeadIds.length > 0 ? wcLeadIds[0] : oppData.wc_lead_id
 
     // Three-source interaction query:
     // 1. lead_interactions by wc_lead_id (if exists)
@@ -88,7 +92,7 @@ export async function GET(
             AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
             AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
         ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
-        WHERE li.lead_id = @wcLeadId AND @wcLeadId IS NOT NULL
+        WHERE li.lead_id IN UNNEST(@wcLeadIds) AND ARRAY_LENGTH(@wcLeadIds) > 0
           -- Window to the opportunity's cluster span (±5s before, +30 days after)
           -- to exclude historical contact-level noise from WC's cross-lead linking
           AND CAST(li.contact_datetime_sydney AS TIMESTAMP) BETWEEN
@@ -213,7 +217,7 @@ export async function GET(
           CAST(NULL AS STRING) AS call_id,
           CAST(NULL AS STRING) AS called_did_label
         FROM \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` wc
-        WHERE wc.lead_id = @wcLeadId AND @wcLeadId IS NOT NULL
+        WHERE wc.lead_id IN UNNEST(@wcLeadIds) AND ARRAY_LENGTH(@wcLeadIds) > 0
           AND wc.lead_type = 'Web Form'
 
         UNION ALL
@@ -322,11 +326,11 @@ export async function GET(
       FROM combined
       ORDER BY interaction_datetime DESC
     `, {
-      wcLeadId: wc_lead_id || null,
+      wcLeadIds: wcLeadIds.length > 0 ? wcLeadIds : [],
       phones,
       oppTimestamp: String(oppData.opportunity_timestamp),
     }, {
-      wcLeadId: 'INT64',
+      wcLeadIds: ['INT64'],
       phones: ['STRING'],
     })
 
