@@ -282,8 +282,9 @@ Three fields per job, cluster-summed to opportunity grain. Per-job ladder
 applied FIRST, then summed (so a mixed cluster sums each job at its own basis).
 
 **Fields**:
-- `invoiced_amount` — `task_invoices_total_ex`, cluster-summed. The truth;
-  never overwritten by estimates.
+- `invoiced_amount` — from `ds_aroflo.vw_job_invoiced` (line-level invoice sum,
+  replaces `task_invoices_total_ex` which was wrong for multi-invoice jobs).
+  Cluster-summed. The truth; never overwritten by estimates.
 - `estimated_sales` — best note-bridge value when not yet invoiced. NULL when
   invoiced > 0. Tagged by `revenue_source` (inv_note / labour_note).
 - `revenue` — **derived reporting field**: `COALESCE(NULLIF(invoiced_amount, 0),
@@ -560,9 +561,12 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
   parser. Website instrumentation fix needed.
 - **Quinn LP WC snippet**: still missing. CRM compensates via Tier 1 email
   parser. Website fix needed.
-- **task_invoices_total_ex sync lag**: AroFlo extract doesn't pick up invoices
-  until the job is fully closed. Revenue model bridges with note parsing, but
-  the lag means recent months lean heavier on estimates. Not a bug — structural.
+- **task_invoices_total_ex replaced**: the AroFlo extract field was wrong for
+  multi-invoice jobs (carried one invoice, not the net). Revenue now uses
+  `ds_aroflo.vw_job_invoiced` which sums line-level invoices from
+  `invoices_deduped` (status IN 'processed','approved'). 69 jobs corrected,
+  +$109K net. App code (queries.ts, route.ts) still reads `task_invoices_total_ex`
+  directly for job detail display — these should migrate to the view.
 - **Labour note parser outliers**: ~10% of matches on multi-visit jobs capture
   one visit's collection, not the full total. `multi_visit_flag` marks these.
   Not fixable without summing across visits (which double-counts when the

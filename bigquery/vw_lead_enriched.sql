@@ -91,32 +91,35 @@ labour_multi_visit AS (
 job_revenue AS (
   SELECT
     tc.jobnumber,
-    SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) AS invoiced_amount,
+    -- Use corrected invoice sum from vw_job_invoiced (not task_invoices_total_ex,
+    -- which is wrong for multi-invoice jobs — carries one invoice, not the net).
+    ji.invoiced_total_ex AS invoiced_amount,
     CASE
-      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN NULL
+      WHEN COALESCE(ji.invoiced_total_ex, 0) > 0 THEN NULL
       WHEN inv.inv_note_ex > 0 THEN inv.inv_note_ex
       WHEN lab.labour_amount >= 50 THEN lab.labour_amount
       ELSE NULL
     END AS estimated_sales,
     CASE
-      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN NULL
+      WHEN COALESCE(ji.invoiced_total_ex, 0) > 0 THEN NULL
       WHEN inv.inv_note_ex > 0 THEN 'inv_note'
       WHEN lab.labour_amount >= 50 THEN 'labour_note'
       ELSE NULL
     END AS revenue_source,
     COALESCE(
-      NULLIF(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0),
+      NULLIF(ji.invoiced_total_ex, 0),
       inv.inv_note_ex,
       CASE WHEN lab.labour_amount >= 50 THEN lab.labour_amount END
     ) AS revenue,
     CASE
-      WHEN COALESCE(SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64), 0) > 0 THEN 'invoiced'
+      WHEN COALESCE(ji.invoiced_total_ex, 0) > 0 THEN 'invoiced'
       WHEN inv.inv_note_ex > 0 THEN 'inv_note'
       WHEN lab.labour_amount >= 50 THEN 'labour_note'
       ELSE 'pending'
     END AS revenue_basis,
     COALESCE(mv.is_multi_visit, FALSE) AS multi_visit_flag
   FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+  LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` ji ON tc.jobnumber = ji.jobnumber
   LEFT JOIN inv_per_job inv ON tc.jobnumber = inv.jobnumber
   LEFT JOIN labour_per_job lab ON tc.jobnumber = lab.jobnumber
   LEFT JOIN labour_multi_visit mv ON tc.jobnumber = mv.jobnumber
@@ -252,9 +255,9 @@ SELECT
   CASE WHEN o.jobnumber IS NOT NULL THEN 'Booked' ELSE 'Not Booked' END AS booking_status,
 
   -- === Revenue model (per-job ladder applied first, then cluster-summed) ===
-  -- invoiced_amount: task_invoices_total_ex, cluster-summed. The truth; never overwritten.
+  -- invoiced_amount: from vw_job_invoiced (corrected line-level sum), cluster-summed.
   COALESCE(cr.cluster_invoiced_amount,
-    SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64)) AS invoiced_amount,
+    ji.invoiced_total_ex) AS invoiced_amount,
   -- estimated_sales: note-bridge value when not yet invoiced (inv_note or labour_note).
   COALESCE(cr.cluster_estimated_sales,
     pj_rev.estimated_sales) AS estimated_sales,
@@ -351,6 +354,8 @@ LEFT JOIN `pttr-taskdata.ds_crm.lkp_campaign` lkp_camp
   ON COALESCE(wc.lp_gad_campaignid, o.campaign) = lkp_camp.campaign_id
 LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
   ON o.jobnumber = tc.jobnumber
+LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` ji
+  ON o.jobnumber = ji.jobnumber
 LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
   ON o.jobnumber = td.jobnumber
 -- Per-job revenue model (single-job opps)
