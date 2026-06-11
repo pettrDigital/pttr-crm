@@ -577,6 +577,69 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
   nor any note carries a dollar amount. Mostly very recent or non-COD-flagged.
   Will self-resolve as invoicing catches up.
 
+## §14 Revenue Rules (MUST follow)
+
+### Revenue source of truth
+- **Revenue = `ds_aroflo.vw_job_invoiced`** — summed line-level invoices from
+  `invoices_deduped` (status IN 'processed','approved'). All values ex-GST.
+- **NEVER** use WC `sale_value` (estimate at capture), quote notes, sell columns,
+  or `task_invoices_total_ex` (broken for multi-invoice jobs) as revenue.
+- WC `sale_value` is a comparison/reconciliation figure only, not revenue truth.
+
+### Cross-task credit notes (NOT YET FIXED)
+- AroFlo sometimes creates a NEW task with a negative invoice to credit an
+  archived job. Pattern: description contains `"Credit Note against JN######"`.
+- `vw_job_invoiced` does NOT net these across tasks — it sums invoices per
+  task_jobnumber only. Result: the original job is overstated, the credit task
+  shows phantom negative revenue.
+- **~$208K linkable** via JN extraction from description (78% deterministic).
+  Fix pending: net the credit against the original job in the view.
+
+### Account-level billing gap
+- ~20% of Account/Strata jobs have no per-job invoice — billed at the Account
+  level (monthly statement). `vw_job_invoiced` returns NULL for these. This is
+  structural, not a bug — per-job invoiced undercounts Account revenue by ~20%.
+
+### Quote → Periodical revenue
+- Some leads link to a $0 quote job; the real revenue is on the linked
+  periodical task that the quote spawned. Follow the AroFlo linked-task
+  relationship ("SEE LINKED TASK FOR APPROVAL" in description, or
+  "master periodical has been created" in task notes) to find the revenue job.
+  `revenue_job` field on Firestore overrides identifies which linked job to
+  read revenue from.
+
+## §15 Phone Format Gotchas
+
+### MessageMedia SMS phones
+- SMS reply notifications from `noreply@message-media.com` carry the sender
+  phone in the subject: `"New SMS reply received from 61418963173"`.
+- The number already includes the `61` country code. Correct normalization:
+  `CONCAT('+', REGEXP_EXTRACT(subject, r'(\d{10,12})$'))` → `+61418963173`.
+- **BUG FOUND**: `CONCAT('+61', ...)` produces `+6161418963173` (double-61).
+  Any phone-join against these numbers silently returns zero matches. This
+  hid a $430K linkage signal during the June 2026 reconciliation.
+- **Rule**: always check the raw digits before prepending a country code.
+
+## §16 Open Findings (to build)
+
+### SMS-phone-match deterministic tier
+- **206 unlinked COD opps → 151 Account jobs, $430K invoiced revenue.**
+- Signal: resident calls COD line (creates a gap-based opp with their phone),
+  job booked under Account (strata manager). Later, CSR texts the resident
+  about access — SMS reply carries the resident's phone + the JN.
+- Match: `SMS sender phone = opp phone` + `JN in SMS body = Account job`.
+- Verified: 116 distinct phones, 0 shared-phone false links, 5/5 spot-checks
+  confirmed same person.
+- Implementation: parse JN from MessageMedia email body, match sender phone
+  to unlinked opp, link with `is_account=TRUE` + `exclude_from_analysis=TRUE`.
+- This is a T3-style deterministic rule, not AI inference.
+
+### JN-from-email-body linkage tier
+- Task emails (to `mrwasher_task+{code}@inboundemail.aroflo.com`) carry the
+  JN in the subject. 316 of 507 inbound task emails have extractable JN.
+- Sender email can match to an opp's email identity.
+- Lower volume than SMS but same deterministic shape.
+
 ## §13 Key Files
 
 | File | Purpose |
