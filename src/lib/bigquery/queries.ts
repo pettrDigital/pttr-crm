@@ -371,7 +371,7 @@ export async function getJobHistory(opportunityId: string) {
 }
 
 // ─── JOBS ───────────────────────────────────────────────────────────────────
-export async function getJobs(limit = 500) {
+export async function getJobs() {
   return query(`
     SELECT job_id, job_no, ref_no, address, client_name, client_phone, client_email,
            task_type, status, grade, assigned, salesperson,
@@ -380,8 +380,7 @@ export async function getJobs(limit = 500) {
     WHERE status IN ('open', 'quote')
        OR logged_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
     ORDER BY logged_date DESC
-    LIMIT @limit
-  `, { limit })
+  `)
 }
 
 export async function getJobDetail(jobId: string) {
