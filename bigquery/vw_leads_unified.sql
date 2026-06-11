@@ -134,6 +134,119 @@ form_rows AS (
   FROM `pttr-taskdata.ds_crm.vw_leads` WHERE channel = 'Form'
 ),
 
+-- === FORM-TWIN HYDRATION ===
+-- WPForms strips phone/email from WC leads, but the same submission arrives as a
+-- parsed jobs@ email that DOES carry them. Match by first-name + ≤5 min window
+-- and hydrate the WC form with the twin's phone and email.
+-- This lets phoneless WC forms cluster with their AroFlo jobs deterministically.
+-- Guard: only hydrate unique matches (no collisions).
+--
+-- Note: uses raw_emails_received directly (not email_form_parsed, which is defined
+-- later in CTE order). Parses name/phone/email inline.
+form_twin_candidates AS (
+  SELECT
+    received_at,
+    -- Parse name from email body (same regex as email_form_parsed)
+    TRIM(COALESCE(
+      REGEXP_EXTRACT(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+        r'(?i)My name is\.{0,3}\s+(.+?)(?:\s+(?:My Problem|I want|My phone|How can))'
+      ),
+      REGEXP_EXTRACT(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+        r'(?i)Name\*?:?\s+(.+?)(?:\s+(?:Phone|Email|Address|Postcode|Suburb|How Can|Message|LP ))'
+      ),
+      REGEXP_EXTRACT(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+        r'(?i)Name\*?:?\s+([^\n\r]{2,30})'
+      )
+    )) AS twin_name,
+    -- Parse phone
+    COALESCE(
+      REGEXP_EXTRACT(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+        r'(?i)(?:Phone\*?:?|phone number is\.{0,3})\s*(\+?[\d\s\-\(\)]{8,15})'
+      ),
+      REGEXP_EXTRACT(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+        r'(?i)Phone\s+(\d[\d\s\-]{7,14})'
+      )
+    ) AS twin_raw_phone,
+    -- Parse email
+    COALESCE(
+      REGEXP_EXTRACT(LOWER(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' ')
+      ), r'(?:email\*?:?|email is\.{0,3})\s*([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})'),
+      REGEXP_EXTRACT(LOWER(
+        REGEXP_REPLACE(REGEXP_REPLACE(body_text, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' ')
+      ), r'(?:email)\s+([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})')
+    ) AS twin_email
+  FROM `pttr-taskdata.ds_crm.raw_emails_received`
+  WHERE received_at >= '2025-11-01'
+    AND from_email IN ('jobs@plumbertotherescue.com.au', 'jobs@electriciantotherescue.com.au',
+      'jobs@mrwasher.com.au', 'leads@resend.quinnmarketing.com.au')
+    AND subject NOT LIKE 'RE:%' AND subject NOT LIKE 'Re:%'
+    AND subject NOT LIKE 'FW:%' AND subject NOT LIKE 'Fw:%'
+    AND (
+      body_text LIKE '%gad_campaignid=%' OR body_text LIKE '%LP Suburb:%'
+      OR body_text LIKE '%LP Service:%'
+      OR (body_text LIKE '%utm_source:%' AND body_text LIKE '%Page URL:%')
+      OR (body_text LIKE '%hq:%' AND body_text LIKE '%service:%' AND from_email LIKE '%quinn%')
+      OR subject LIKE '%PTTR website form submission%'
+      OR subject LIKE '%ETTR Website Job Booking%'
+      OR subject LIKE '%ETTR Website Question%'
+      OR subject LIKE '%New ETTR Website Form%'
+    )
+),
+form_twin_unique AS (
+  SELECT *,
+    LOWER(TRIM(SPLIT(INITCAP(TRIM(twin_name)), ' ')[SAFE_OFFSET(0)])) AS twin_first_name,
+    -- Normalize phone to E.164
+    CASE
+      WHEN REGEXP_CONTAINS(REGEXP_REPLACE(COALESCE(twin_raw_phone, ''), r'[^0-9]', ''), r'^61[2-9]')
+        THEN CONCAT('+', REGEXP_REPLACE(twin_raw_phone, r'[^0-9]', ''))
+      WHEN REGEXP_CONTAINS(REGEXP_REPLACE(COALESCE(twin_raw_phone, ''), r'[^0-9]', ''), r'^0[2-9]')
+        THEN CONCAT('+61', SUBSTR(REGEXP_REPLACE(twin_raw_phone, r'[^0-9]', ''), 2))
+      ELSE NULL
+    END AS twin_phone
+  FROM form_twin_candidates
+  WHERE twin_name IS NOT NULL AND TRIM(twin_name) != ''
+),
+
+form_rows_hydrated AS (
+  SELECT
+    fr.lead_id, fr.source_type,
+    COALESCE(fr.phone, twin.twin_phone) AS phone,
+    fr.lead_timestamp, fr.lead_timestamp_sydney,
+    fr.duration_sec, fr.queue_ext, fr.queue_name, fr.is_business_hours,
+    fr.attribution_source, fr.wc_lead_id, fr.channel,
+    fr.source, fr.medium, fr.campaign, fr.keyword, fr.profile, fr.tracking_number,
+    fr.direct_subtype, fr.call_outcome, fr.answered, fr.missed, fr.talk_time,
+    COALESCE(fr.contact_name, wc_ale.best_name) AS contact_name,
+    COALESCE(fr.email, twin.twin_email) AS email,
+    fr.form_suburb, fr.form_address, fr.form_problem
+  FROM form_rows fr
+  LEFT JOIN (
+    SELECT CAST(lead_id AS STRING) AS lead_id,
+      COALESCE(NULLIF(TRIM(contact_name), ''), NULLIF(TRIM(form_my_name), '')) AS best_name
+    FROM `pttr-taskdata.gd_WhatConverts.all_leads_enriched`
+    WHERE lead_status = 'Unique' AND spam = FALSE AND is_test_lead = FALSE
+  ) wc_ale ON fr.lead_id = wc_ale.lead_id AND (fr.contact_name IS NULL OR TRIM(fr.contact_name) = '')
+  LEFT JOIN (
+    -- Deduplicate: only take twins with exactly one candidate per first-name + minute bucket
+    SELECT * FROM (
+      SELECT *,
+        COUNT(*) OVER (PARTITION BY twin_first_name, TIMESTAMP_TRUNC(received_at, MINUTE)) AS candidates
+      FROM form_twin_unique
+    ) WHERE candidates = 1
+  ) twin
+    ON (fr.phone IS NULL OR fr.phone = '')
+    AND COALESCE(fr.contact_name, wc_ale.best_name) IS NOT NULL
+    AND LOWER(TRIM(SPLIT(COALESCE(fr.contact_name, wc_ale.best_name), ' ')[SAFE_OFFSET(0)])) = twin.twin_first_name
+    AND twin.twin_first_name != ''
+    AND ABS(TIMESTAMP_DIFF(twin.received_at, fr.lead_timestamp, SECOND)) <= 300
+),
+
 -- === EMAIL-BASED FORMS (Quinn LP + WPForms, parsed from raw_emails_received) ===
 email_form_raw AS (
   SELECT
@@ -328,8 +441,9 @@ email_rows AS (
   FROM email_form_parsed
   -- Exclude email-parsed forms that duplicate a WC form (same name + ±60s).
   -- The WC version has better attribution; the email copy would create a split opp.
+  -- Uses the hydrated form rows so the name comparison works even when vw_leads had NULL.
   WHERE NOT EXISTS (
-    SELECT 1 FROM form_rows fr
+    SELECT 1 FROM form_rows_hydrated fr
     WHERE fr.contact_name IS NOT NULL
       AND LOWER(TRIM(fr.contact_name)) = LOWER(TRIM(INITCAP(TRIM(email_form_parsed.raw_name))))
       AND ABS(TIMESTAMP_DIFF(
@@ -342,6 +456,6 @@ email_rows AS (
 
 SELECT * FROM call_rows
 UNION ALL
-SELECT * FROM form_rows
+SELECT * FROM form_rows_hydrated
 UNION ALL
 SELECT * FROM email_rows;
