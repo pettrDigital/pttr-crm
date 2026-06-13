@@ -16,7 +16,9 @@ export async function GET(
     // Resolve the opportunity's contact points
     const [opp] = await query(`
       SELECT matched_phones, matched_emails, wc_lead_id, opportunity_timestamp,
-        ARRAY(SELECT wl.wc_lead_id FROM UNNEST(wc_leads) wl) AS all_wc_lead_ids
+        -- wc_leads array not yet deployed to opportunities table; use scalar wc_lead_id
+        CASE WHEN wc_lead_id IS NOT NULL THEN [wc_lead_id] ELSE [] END AS all_wc_lead_ids,
+        all_jobnumbers
       FROM \`${DS}.opportunities\`
       WHERE opportunity_id = @opportunityId
     `, { opportunityId })
@@ -26,24 +28,39 @@ export async function GET(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const oppData = opp as any
     const phones = (oppData.matched_phones as string || '').split(',').map((p: string) => p.trim()).filter(Boolean)
+    const emails = (oppData.matched_emails as string || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean)
 
-    // Collect all WC lead IDs: from the opportunity array + any manual Firestore override
+    // Collect all WC lead IDs and job numbers from BQ + Firestore
     const wcLeadIds: number[] = [...(oppData.all_wc_lead_ids || [])].filter(Boolean)
+    let allJobnumbers = oppData.all_jobnumbers as string || ''
     try {
       const overrideDoc = await adminDb.collection('crm_lead_overrides').doc(opportunityId).get()
       if (overrideDoc.exists) {
-        const manualWc = overrideDoc.data()?.manual_wc_lead_id
+        const data = overrideDoc.data()!
+        const manualWc = data.manual_wc_lead_id
         if (manualWc != null && !wcLeadIds.includes(manualWc)) wcLeadIds.push(manualWc)
+        // Add Firestore-linked job numbers (manual link + sms_jn_tier linked_jobs)
+        const extraJns = [data.manual_job_number as string, ...(data.linked_jobs as string[] || [])].filter(Boolean)
+        if (extraJns.length > 0) {
+          const existing = new Set(allJobnumbers.split(',').map(s => s.trim()).filter(Boolean))
+          for (const jn of extraJns) existing.add(jn)
+          allJobnumbers = [...existing].join(',')
+        }
       }
     } catch {} // non-fatal
 
     // Primary WC lead for backward-compatible single-value usage
     const wc_lead_id = wcLeadIds.length > 0 ? wcLeadIds[0] : oppData.wc_lead_id
 
-    // Three-source interaction query:
-    // 1. lead_interactions by wc_lead_id (if exists)
-    // 2. raw_calls by matched_phones (for direct/untracked)
-    // 3. email reply threads by conversation_id (RE:/FW: on form threads)
+    // Eight-source interaction query:
+    // 1. WC lead_interactions by wc_lead_id
+    // 2. raw_calls by matched_phones
+    // 3. email reply threads (RE:/FW: on form conversations)
+    // 4. form submissions (WC + email-parsed)
+    // 5. OfficeHQ answering-service emails
+    // 6. MessageMedia SMS threads (phone/JN matched)
+    // 7. AroFlo task emails (JN matched)
+    // 8. General Outlook correspondence (Path A: email match, B: JN anchor, C: subject thread)
     // UNION and dedupe
     const rows = await query(`
       WITH
@@ -292,6 +309,205 @@ export async function GET(
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 60 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
+      -- Source 6: MessageMedia SMS threads matched by phone or JN
+      sms_threads AS (
+        SELECT
+          e.message_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          CASE WHEN LOWER(e.subject) LIKE '%reply%' THEN 'SMS Reply' ELSE 'SMS' END AS interaction_type,
+          DATETIME(e.received_at, 'Australia/Sydney') AS interaction_datetime,
+          DATE(DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_time,
+          'MessageMedia' AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(e.body_preview, 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
+        FROM \`${DS}.raw_emails_received\` e
+        WHERE (LOWER(e.from_email) LIKE '%message-media%' OR LOWER(e.from_email) LIKE '%messagemedia%')
+          AND (
+            EXISTS (SELECT 1 FROM UNNEST(@phones) AS p WHERE e.subject LIKE CONCAT('%', SUBSTR(p, 2), '%'))
+            OR EXISTS (SELECT 1 FROM UNNEST(SPLIT(COALESCE(@allJobnumbers, ''), ',')) AS jn
+              WHERE TRIM(jn) != '' AND e.body_text LIKE CONCAT('%JN', TRIM(jn), '%'))
+          )
+          AND TIMESTAMP(e.received_at) BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+      ),
+      -- Source 7: AroFlo task emails (forwarded to mrwasher_task+xxx@inboundemail.aroflo.com)
+      task_emails AS (
+        SELECT
+          e.message_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          'Task Email' AS interaction_type,
+          DATETIME(e.received_at, 'Australia/Sydney') AS interaction_datetime,
+          DATE(DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_time,
+          e.from_name AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(e.subject, e.body_preview, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
+        FROM \`${DS}.raw_emails_sent\` e
+        WHERE LOWER(e.to_email) LIKE '%aroflo%'
+          AND EXISTS (SELECT 1 FROM UNNEST(SPLIT(COALESCE(@allJobnumbers, ''), ',')) AS jn
+            WHERE TRIM(jn) != '' AND (e.subject LIKE CONCAT('%', TRIM(jn), '%')
+              OR e.body_text LIKE CONCAT('%', TRIM(jn), '%')))
+          AND TIMESTAMP(e.received_at) BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+      ),
+      -- Source 8: General Outlook correspondence (3 link paths, tagged)
+      -- Excludes already-categorized senders: message-media (SMS), myreceptionist (OHQ),
+      -- aroflo forwards (task email), WC/Quinn form senders, noreply@message-media.com
+      -- Generic-subject stop-list for Path C to prevent cross-customer merging.
+      outlook_emails AS (
+        WITH
+        -- Sender exclusion: already rendered by Sources 3/5/6/7
+        excluded_senders AS (
+          SELECT sender FROM UNNEST([
+            'message-media', 'messagemedia', 'myreceptionist', 'inboundemail.aroflo',
+            'noreply@message-media.com', 'noreply@messagemedia.com',
+            'noreply@myreceptionist.com.au', 'vodafone@myreceptionist.com.au',
+            'leads@resend.quinnmarketing.com.au', 'noreply@smata.com',
+            'noreply@message-media.com'
+          ]) AS sender
+        ),
+        -- Path A: customer email match (inbound + outbound)
+        path_a_inbound AS (
+          SELECT e.message_id, 'Inbound Email' AS interaction_type, 'A:email' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_received\` e
+          WHERE ARRAY_LENGTH(@emails) > 0
+            AND LOWER(TRIM(e.from_email)) IN UNNEST(@emails)
+            AND NOT EXISTS (SELECT 1 FROM excluded_senders x WHERE LOWER(e.from_email) LIKE CONCAT('%', x.sender, '%'))
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ),
+        path_a_outbound AS (
+          SELECT e.message_id, 'Outbound Email' AS interaction_type, 'A:email' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_sent\` e
+          WHERE ARRAY_LENGTH(@emails) > 0
+            AND LOWER(TRIM(e.to_email)) IN UNNEST(@emails)
+            AND NOT EXISTS (SELECT 1 FROM excluded_senders x WHERE LOWER(e.to_email) LIKE CONCAT('%', x.sender, '%'))
+            AND NOT LOWER(e.to_email) LIKE '%aroflo%'
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ),
+        -- Path B: JN in subject or body
+        path_b_inbound AS (
+          SELECT e.message_id,
+            CASE WHEN LOWER(e.from_email) LIKE '%@mrwasher%' OR LOWER(e.from_email) LIKE '%plumber%'
+              OR LOWER(e.from_email) LIKE '%electrician%' THEN 'Internal Email' ELSE 'Inbound Email' END AS interaction_type,
+            'B:JN' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_received\` e
+          WHERE EXISTS (SELECT 1 FROM UNNEST(SPLIT(COALESCE(@allJobnumbers, ''), ',')) AS jn
+            WHERE TRIM(jn) != '' AND (e.subject LIKE CONCAT('%', TRIM(jn), '%')
+              OR e.body_text LIKE CONCAT('%', TRIM(jn), '%')))
+            AND NOT EXISTS (SELECT 1 FROM excluded_senders x WHERE LOWER(e.from_email) LIKE CONCAT('%', x.sender, '%'))
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ),
+        path_b_outbound AS (
+          SELECT e.message_id,
+            'Outbound Email' AS interaction_type, 'B:JN' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_sent\` e
+          WHERE EXISTS (SELECT 1 FROM UNNEST(SPLIT(COALESCE(@allJobnumbers, ''), ',')) AS jn
+            WHERE TRIM(jn) != '' AND (e.subject LIKE CONCAT('%', TRIM(jn), '%')
+              OR e.body_text LIKE CONCAT('%', TRIM(jn), '%')))
+            AND NOT LOWER(e.to_email) LIKE '%aroflo%'
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ),
+        -- Combine A + B (dedupe by message_id, prefer B tag over A)
+        ab_combined AS (
+          SELECT message_id, interaction_type, link_path, operator, subject, body_preview, received_at
+          FROM path_b_inbound
+          UNION DISTINCT
+          SELECT * FROM path_b_outbound
+          UNION DISTINCT
+          SELECT * FROM path_a_inbound WHERE message_id NOT IN (SELECT message_id FROM path_b_inbound)
+          UNION DISTINCT
+          SELECT * FROM path_a_outbound WHERE message_id NOT IN (SELECT message_id FROM path_b_outbound)
+        ),
+        -- Path C: subject-thread continuation (only on distinctive subjects)
+        -- Normalized subject = strip RE:/FW:/Fwd: prefixes
+        ab_subjects AS (
+          SELECT DISTINCT TRIM(REGEXP_REPLACE(subject, r'^(?:RE:|Re:|FW:|Fw:|Fwd:|fwd:)\s*', '')) AS norm_subject
+          FROM ab_combined
+          WHERE subject IS NOT NULL
+            -- Guard: subject must be distinctive (>15 chars, not in stop-list)
+            AND LENGTH(TRIM(REGEXP_REPLACE(subject, r'^(?:RE:|Re:|FW:|Fw:|Fwd:|fwd:)\s*', ''))) > 15
+            AND LOWER(TRIM(REGEXP_REPLACE(subject, r'^(?:RE:|Re:|FW:|Fw:|Fwd:|fwd:)\s*', ''))) NOT IN (
+              'quote', 'hi', 'hello', 'thanks', 'thank you', 'hot water', 'plumbing', 'electrical',
+              'urgent', 'booking', 'invoice', 'receipt', 'confirmation', 'appointment',
+              'job update', 'work order', 'enquiry', 'inquiry', 'new enquiry', 'new lead',
+              'fw:', 'fwd:', 're:', ''
+            )
+        ),
+        path_c_inbound AS (
+          SELECT e.message_id,
+            CASE WHEN LOWER(e.from_email) LIKE '%@mrwasher%' OR LOWER(e.from_email) LIKE '%plumber%'
+              OR LOWER(e.from_email) LIKE '%electrician%' THEN 'Internal Email' ELSE 'Inbound Email' END AS interaction_type,
+            'C:thread' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_received\` e
+          JOIN ab_subjects s ON TRIM(REGEXP_REPLACE(e.subject, r'^(?:RE:|Re:|FW:|Fw:|Fwd:|fwd:)\\s*', '')) = s.norm_subject
+          WHERE e.message_id NOT IN (SELECT message_id FROM ab_combined)
+            AND NOT EXISTS (SELECT 1 FROM excluded_senders x WHERE LOWER(e.from_email) LIKE CONCAT('%', x.sender, '%'))
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        ),
+        path_c_outbound AS (
+          SELECT e.message_id, 'Outbound Email' AS interaction_type, 'C:thread' AS link_path,
+            e.from_name AS operator, e.subject, e.body_preview, e.received_at
+          FROM \`${DS}.raw_emails_sent\` e
+          JOIN ab_subjects s ON TRIM(REGEXP_REPLACE(e.subject, r'^(?:RE:|Re:|FW:|Fw:|Fwd:|fwd:)\\s*', '')) = s.norm_subject
+          WHERE e.message_id NOT IN (SELECT message_id FROM ab_combined)
+            AND NOT LOWER(e.to_email) LIKE '%aroflo%'
+            AND TIMESTAMP(e.received_at) BETWEEN
+              TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+              AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+        )
+        -- Final: A+B+C combined, one row per message_id
+        SELECT
+          message_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          interaction_type,
+          DATETIME(received_at, 'Australia/Sydney') AS interaction_datetime,
+          DATE(DATETIME(received_at, 'Australia/Sydney')) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', DATETIME(received_at, 'Australia/Sydney')) AS interaction_time,
+          operator AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(COALESCE(CONCAT('[', link_path, '] ', subject), body_preview, ''), 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id,
+          CAST(NULL AS STRING) AS called_did_label
+        FROM ab_combined
+        UNION ALL
+        SELECT message_id, CAST(NULL AS INT64),interaction_type,
+          DATETIME(received_at, 'Australia/Sydney'), DATE(DATETIME(received_at, 'Australia/Sydney')),
+          FORMAT_DATETIME('%H:%M', DATETIME(received_at, 'Australia/Sydney')),
+          operator, CAST(NULL AS INT64),
+          LEFT(COALESCE(CONCAT('[', link_path, '] ', subject), body_preview, ''), 120),
+          CAST(NULL AS STRING), CAST(NULL AS STRING)
+        FROM path_c_inbound
+        UNION ALL
+        SELECT message_id, CAST(NULL AS INT64), interaction_type,
+          DATETIME(received_at, 'Australia/Sydney'), DATE(DATETIME(received_at, 'Australia/Sydney')),
+          FORMAT_DATETIME('%H:%M', DATETIME(received_at, 'Australia/Sydney')),
+          operator, CAST(NULL AS INT64),
+          LEFT(COALESCE(CONCAT('[', link_path, '] ', subject), body_preview, ''), 120),
+          CAST(NULL AS STRING), CAST(NULL AS STRING)
+        FROM path_c_outbound
+      ),
       -- Dedupe forms + email threads against WC interactions (±90s timestamp overlap).
       -- WC interactions are authoritative — if they cover the same event, skip the dupe.
       forms_deduped AS (
@@ -306,7 +522,7 @@ export async function GET(
           ON ABS(TIMESTAMP_DIFF(CAST(wi.interaction_datetime AS TIMESTAMP), CAST(etr.interaction_datetime AS TIMESTAMP), SECOND)) <= 90
         WHERE wi.interaction_datetime IS NULL
       ),
-      -- Combine: WC (authoritative) + calls (dedupe by call_id) + surviving forms/threads + OHQ
+      -- Combine all sources
       combined AS (
         SELECT * FROM wc_interactions
         UNION ALL
@@ -318,6 +534,18 @@ export async function GET(
         SELECT * FROM threads_deduped
         UNION ALL
         SELECT * FROM ohq_emails
+        UNION ALL
+        SELECT * FROM sms_threads
+        UNION ALL
+        SELECT * FROM task_emails
+        UNION ALL
+        SELECT oe.* FROM outlook_emails oe
+        WHERE oe.interaction_id NOT IN (SELECT interaction_id FROM wc_interactions WHERE interaction_id IS NOT NULL)
+          AND oe.interaction_id NOT IN (SELECT interaction_id FROM forms_deduped WHERE interaction_id IS NOT NULL)
+          AND oe.interaction_id NOT IN (SELECT interaction_id FROM threads_deduped WHERE interaction_id IS NOT NULL)
+          AND oe.interaction_id NOT IN (SELECT interaction_id FROM ohq_emails WHERE interaction_id IS NOT NULL)
+          AND oe.interaction_id NOT IN (SELECT interaction_id FROM sms_threads WHERE interaction_id IS NOT NULL)
+          AND oe.interaction_id NOT IN (SELECT interaction_id FROM task_emails WHERE interaction_id IS NOT NULL)
       )
       SELECT interaction_id, lead_id, interaction_type, interaction_datetime,
         interaction_date, interaction_time, interaction_operator,
@@ -328,10 +556,13 @@ export async function GET(
     `, {
       wcLeadIds: wcLeadIds.length > 0 ? wcLeadIds : [],
       phones,
+      emails: emails.length > 0 ? emails : [],
       oppTimestamp: String(oppData.opportunity_timestamp),
+      allJobnumbers: allJobnumbers || '',
     }, {
       wcLeadIds: ['INT64'],
       phones: ['STRING'],
+      emails: ['STRING'],
     })
 
     return Response.json(JSON.parse(JSON.stringify(rows)))

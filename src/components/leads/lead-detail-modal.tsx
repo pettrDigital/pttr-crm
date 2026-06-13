@@ -16,7 +16,7 @@ import { FunnelStageBadge } from '@/components/shared/status-badge'
 import { LeadClassification } from '@/components/leads/lead-classification'
 import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import { authFetch } from '@/lib/auth/auth-fetch'
-import { ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText, MessageSquare } from 'lucide-react'
 import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
 
 // ─── TYPES + HELPERS ────────────────────────────────────────────────────────
@@ -57,10 +57,12 @@ interface CachedLeadData {
 
 const leadCache = new Map<string, CachedLeadData>()
 
-function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
+function interactionTypeKey(type: string): 'call' | 'email' | 'form' | 'sms' | 'task_email' | null {
   const t = type?.toLowerCase() ?? ''
   if (t.includes('call') || t.includes('phone')) return 'call'
   if (t.includes('form') && t.includes('submission')) return 'form'
+  if (t.includes('sms')) return 'sms'
+  if (t.includes('task email')) return 'task_email'
   if (t.includes('answering service')) return 'email'
   if (t.includes('email')) return 'email'
   return null
@@ -69,6 +71,8 @@ function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
 function InteractionIcon({ type }: { type: string }) {
   const t = type?.toLowerCase() ?? ''
   if (t.includes('answering service')) return <FileText className="h-3.5 w-3.5 text-orange-500" />
+  if (t.includes('sms')) return <MessageSquare className="h-3.5 w-3.5 text-teal-500" />
+  if (t.includes('task email')) return <Mail className="h-3.5 w-3.5 text-amber-600" />
   if (t.includes('inbound') && t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
   if (t.includes('outbound') && t.includes('call')) return <PhoneOutgoing className="h-3.5 w-3.5 text-blue-500" />
   if (t.includes('inbound') && t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />
@@ -223,6 +227,51 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
             {detail.email_body}
           </div>
         )}
+      </div>
+    )
+  }
+
+  // SMS — parse reply text and original outbound message
+  if ((ix.interaction_type === 'SMS Reply' || ix.interaction_type === 'SMS') && detail?.email_body) {
+    const body = detail.email_body ?? ''
+    const replyMatch = body.match(/Reply Message:\s*([\s\S]*?)(?=\r?\n\r?\nOriginal|$)/i)
+    const originalMatch = body.match(/Original Message:\s*([\s\S]*?)$/i)
+    const phoneMatch = (detail.subject ?? '').match(/(\d{10,12})\)?$/)
+    return (
+      <div className="px-4 py-2 bg-teal-50/50 border-t border-teal-200/50 space-y-1.5">
+        <div className="text-[11px] font-medium text-teal-700 uppercase tracking-[0.05em]">SMS Thread</div>
+        {phoneMatch && <div className="text-[12px] text-muted-foreground">Customer: +{phoneMatch[1]}</div>}
+        {replyMatch && (
+          <div className="text-[13px] bg-teal-100/60 rounded p-2">
+            <span className="text-[10px] font-medium text-teal-800 uppercase tracking-[0.05em]">Customer Reply</span>
+            <div className="mt-0.5">{replyMatch[1].trim()}</div>
+          </div>
+        )}
+        {originalMatch && (
+          <div className="text-[13px] bg-white/60 rounded p-2 text-muted-foreground">
+            <span className="text-[10px] font-medium uppercase tracking-[0.05em]">Our Message</span>
+            <div className="mt-0.5">{originalMatch[1].trim()}</div>
+          </div>
+        )}
+        {!replyMatch && !originalMatch && (
+          <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto">{body}</div>
+        )}
+      </div>
+    )
+  }
+
+  // Task email — forwarded to AroFlo
+  if (ix.interaction_type === 'Task Email' && detail) {
+    return (
+      <div className="px-4 py-2 bg-amber-50/50 border-t border-amber-200/50 space-y-1.5">
+        <div className="text-[11px] font-medium text-amber-700 uppercase tracking-[0.05em]">AroFlo Task Email</div>
+        <div className="text-[11px] text-muted-foreground space-y-0.5">
+          {detail.from_address && <div>From: {detail.from_address}</div>}
+          {detail.subject && <div className="font-medium">{detail.subject}</div>}
+        </div>
+        <div className="text-[13px] whitespace-pre-wrap bg-white/60 rounded p-2 max-h-[200px] overflow-y-auto leading-relaxed">
+          {stripHtml(detail.email_body) || 'No content available.'}
+        </div>
       </div>
     )
   }
@@ -796,27 +845,37 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                 ) : interactions.map((ix, i) => {
                   const ixId = ix.interaction_id || ix.call_id || String(i)
                   const isExpanded = expandedIx.has(ixId)
-                  return (
-                    <div key={ixId} className="border-t border-muted/50">
-                      <div
-                        className="flex items-center gap-2 py-1.5 px-1 cursor-pointer hover:bg-muted/30 transition-colors text-[13px]"
-                        onClick={() => toggleIx(ixId)}
-                      >
-                        <InteractionIcon type={ix.interaction_type} />
-                        <span className="tabular-nums text-muted-foreground">{formatDate(ix.interaction_date, 'd MMM')}</span>
-                        <span className="tabular-nums text-muted-foreground">{ix.interaction_time || ''}</span>
-                        {ix.called_did_label && <span className="text-[11px] text-muted-foreground/70">{ix.called_did_label}</span>}
-                        <span className="text-foreground">{ix.interaction_operator || ''}</span>
-                        {ix.interaction_duration_seconds ? (
-                          <span className="text-muted-foreground tabular-nums ml-auto">
-                            {Math.floor(ix.interaction_duration_seconds / 60)}m{ix.interaction_duration_seconds % 60 ? ` ${ix.interaction_duration_seconds % 60}s` : ''}
-                          </span>
-                        ) : <span className="ml-auto" />}
-                        <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground/50 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                  // Defensive: catch render errors per-row so one bad interaction can't blank the list
+                  try {
+                    return (
+                      <div key={ixId} className="border-t border-muted/50">
+                        <div
+                          className="flex items-center gap-2 py-1.5 px-1 cursor-pointer hover:bg-muted/30 transition-colors text-[13px]"
+                          onClick={() => toggleIx(ixId)}
+                        >
+                          <InteractionIcon type={ix.interaction_type || ''} />
+                          <span className="tabular-nums text-muted-foreground">{formatDate(ix.interaction_date, 'd MMM')}</span>
+                          <span className="tabular-nums text-muted-foreground">{ix.interaction_time || ''}</span>
+                          {ix.called_did_label && <span className="text-[11px] text-muted-foreground/70">{ix.called_did_label}</span>}
+                          <span className="text-foreground">{ix.interaction_operator || ''}</span>
+                          {ix.interaction_duration_seconds ? (
+                            <span className="text-muted-foreground tabular-nums ml-auto">
+                              {Math.floor(ix.interaction_duration_seconds / 60)}m{ix.interaction_duration_seconds % 60 ? ` ${ix.interaction_duration_seconds % 60}s` : ''}
+                            </span>
+                          ) : <span className="ml-auto" />}
+                          <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground/50 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                        </div>
+                        {isExpanded && <InlineInteractionDetail ix={ix} lead={lead} />}
                       </div>
-                      {isExpanded && <InlineInteractionDetail ix={ix} lead={lead} />}
-                    </div>
-                  )
+                    )
+                  } catch {
+                    // Degraded card: show type + time but no detail
+                    return (
+                      <div key={ixId} className="border-t border-muted/50 px-2 py-1 text-[12px] text-muted-foreground">
+                        {ix.interaction_type || 'Unknown'} — {ix.interaction_time || ''} (render error)
+                      </div>
+                    )
+                  }
                 })}
               </div>
 

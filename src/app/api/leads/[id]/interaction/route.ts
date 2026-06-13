@@ -54,8 +54,11 @@ export async function GET(
         LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
         LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
         LEFT JOIN \`${DS}.lead_interactions\` li ON rc.call_id = li.call_id
+        -- Per-call WC lead: use spine's call_id→wc_lead_id mapping (not li.lead_id,
+        -- which is always the cluster primary and gives wrong transcript for secondary touches)
+        LEFT JOIN \`${DS}.vw_leads_unified\` lu_wc ON rc.call_id = lu_wc.lead_id AND lu_wc.wc_lead_id IS NOT NULL
         LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
-          ON li.lead_id IS NOT NULL AND CAST(li.lead_id AS INT64) = ale.lead_id
+          ON COALESCE(lu_wc.wc_lead_id, CAST(li.lead_id AS INT64)) = ale.lead_id
         LEFT JOIN (
           SELECT parent_call_id, callee_name,
             ROW_NUMBER() OVER (PARTITION BY parent_call_id
@@ -80,24 +83,35 @@ export async function GET(
       if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
 
       // Fallback: WC-internal call_id not in raw_calls — fetch from lead_interactions + WC transcript
+      // Join to WC via the SPECIFIC lead that owns this call's timestamp (not always the cluster primary)
       const wcRows = await query(`
         SELECT
           li.call_id,
           li.contact_datetime_sydney AS call_datetime,
           CAST(NULL AS STRING) AS caller_phone,
           CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name ELSE NULL END AS operator,
-          ale.call_duration_seconds AS duration_seconds,
-          COALESCE(li.contact_content, ale.call_transcription) AS full_transcript,
+          COALESCE(ale_specific.call_duration_seconds, ale_primary.call_duration_seconds) AS duration_seconds,
+          COALESCE(li.contact_content, ale_specific.call_transcription, ale_primary.call_transcription) AS full_transcript,
           CASE
             WHEN li.contact_content IS NOT NULL THEN 'whatconverts'
-            WHEN ale.call_transcription IS NOT NULL THEN 'whatconverts'
+            WHEN ale_specific.call_transcription IS NOT NULL THEN 'whatconverts'
+            WHEN ale_primary.call_transcription IS NOT NULL THEN 'whatconverts'
             ELSE NULL
           END AS transcript_source,
           CAST(NULL AS STRING) AS recording_url,
-          JSON_VALUE(ale.raw_json, '$.recording') AS wc_recording_url
+          COALESCE(
+            JSON_VALUE(ale_specific.raw_json, '$.recording'),
+            JSON_VALUE(ale_primary.raw_json, '$.recording')
+          ) AS wc_recording_url
         FROM \`${DS}.lead_interactions\` li
-        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
-          ON CAST(li.lead_id AS INT64) = ale.lead_id
+        -- Try per-call WC lead first: match by call timestamp ±5s to find the specific WC lead
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale_specific
+          ON ale_specific.lead_type = 'Phone Call'
+          AND ABS(TIMESTAMP_DIFF(CAST(li.contact_datetime_sydney AS TIMESTAMP), ale_specific.date_created, SECOND)) <= 5
+          AND ale_specific.lead_id != CAST(li.lead_id AS INT64)
+        -- Fallback to cluster primary
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale_primary
+          ON CAST(li.lead_id AS INT64) = ale_primary.lead_id
         WHERE li.call_id = @callId
         LIMIT 1
       `, { callId })
@@ -107,9 +121,8 @@ export async function GET(
 
     if (type === 'email') {
       const messageId = searchParams.get('call_id') // reused param name for email message_id
-      // Try raw_emails_received first (for reply-thread emails + form originals)
-      // Prefer body_preview: it preserves line breaks from structured emails (e.g. OfficeHQ).
-      // body_text is often a flat single-line strip of the HTML.
+      // Try raw_emails_received first (inbound emails, reply threads, form originals)
+      // Then raw_emails_sent (outbound emails — Outlook correspondence)
       if (messageId) {
         const rows = await query(`
           SELECT
@@ -123,6 +136,19 @@ export async function GET(
           LIMIT 1
         `, { messageId })
         if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+        // Fallback: check raw_emails_sent (outbound Outlook correspondence)
+        const sentRows = await query(`
+          SELECT
+            DATETIME(received_at, 'Australia/Sydney') AS submitted_at,
+            from_email AS from_address,
+            to_email AS to_address,
+            subject,
+            COALESCE(body_preview, body_text) AS email_body
+          FROM \`${DS}.raw_emails_sent\`
+          WHERE message_id = @messageId
+          LIMIT 1
+        `, { messageId })
+        if (sentRows.length > 0) return Response.json(JSON.parse(JSON.stringify(sentRows[0])))
       }
       // Fallback: lead_interactions by datetime
       if (datetime) {
@@ -198,6 +224,44 @@ export async function GET(
             to_email AS to_address,
             COALESCE(body_text, body_preview) AS email_body
           FROM \`${DS}.raw_emails_received\`
+          WHERE message_id = @messageId
+          LIMIT 1
+        `, { messageId })
+        if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+      }
+      return Response.json(null)
+    }
+
+    if (type === 'sms') {
+      const messageId = searchParams.get('call_id')
+      if (messageId) {
+        const rows = await query(`
+          SELECT
+            DATETIME(received_at, 'Australia/Sydney') AS submitted_at,
+            from_email AS from_address,
+            to_email AS to_address,
+            subject,
+            COALESCE(body_preview, body_text) AS email_body
+          FROM \`${DS}.raw_emails_received\`
+          WHERE message_id = @messageId
+          LIMIT 1
+        `, { messageId })
+        if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+      }
+      return Response.json(null)
+    }
+
+    if (type === 'task_email') {
+      const messageId = searchParams.get('call_id')
+      if (messageId) {
+        const rows = await query(`
+          SELECT
+            DATETIME(received_at, 'Australia/Sydney') AS submitted_at,
+            from_email AS from_address,
+            to_email AS to_address,
+            subject,
+            COALESCE(body_preview, body_text) AS email_body
+          FROM \`${DS}.raw_emails_sent\`
           WHERE message_id = @messageId
           LIMIT 1
         `, { messageId })

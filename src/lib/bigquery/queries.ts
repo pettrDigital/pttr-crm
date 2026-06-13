@@ -645,11 +645,14 @@ export async function getDashboardStats() {
   return query(`
     SELECT
       COUNT(*) AS total_leads,
-      COUNTIF(booking_status = 'Booked') AS bookings,
-      COUNTIF(completed = TRUE) AS conversions,
-      ROUND(SAFE_DIVIDE(COUNTIF(booking_status = 'Booked'), COUNT(*)) * 100, 1) AS booking_rate,
-      SUM(CASE WHEN completed = TRUE THEN COALESCE(job_value, 0) ELSE 0 END) AS revenue
-    FROM \`${DS}.vw_lead_enriched\`
-    WHERE DATE(created_at_sydney) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      COUNTIF(le.booking_status = 'Booked') AS bookings,
+      COUNTIF(le.completed = TRUE) AS conversions,
+      ROUND(SAFE_DIVIDE(COUNTIF(le.booking_status = 'Booked'), COUNT(*)) * 100, 1) AS booking_rate,
+      SUM(CASE WHEN le.completed = TRUE THEN COALESCE(le.job_value, 0) ELSE 0 END) AS revenue
+    FROM \`${DS}.vw_lead_enriched\` le
+    LEFT JOIN \`${DS}.crm_account_exclusions\` excl
+      ON le.opportunity_id = excl.opportunity_id
+    WHERE DATE(le.created_at_sydney) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+      AND excl.opportunity_id IS NULL
   `)
 }

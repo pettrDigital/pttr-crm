@@ -174,15 +174,25 @@ export const LeadsTable = memo(function LeadsTable({ leads, onViewLead, needsRev
     }
     if (search) {
       const term = search.toLowerCase()
-      result = result.filter((l) =>
-        l.contact_name?.toLowerCase().includes(term) ||
-        l.phone_norm?.includes(term) ||
-        l.suburb?.toLowerCase().includes(term) ||
-        l.lead_source?.toLowerCase().includes(term) ||
-        l.lead_id?.toLowerCase().includes(term) ||
-        String(l.wc_lead_id || '').includes(term) ||
-        l.all_jobnumbers?.includes(term)
-      )
+      result = result.filter((l) => {
+        // Match on displayed PH-/WC-/EM-/JN- label (what the user sees and copies)
+        const label = formatOpportunityLabel(l).toLowerCase()
+        // Also match bare digits against phone (stripped) for partial phone search
+        // Normalize: strip non-digits, then reduce to last 9 for AU mobile matching
+        const bareDigits = term.replace(/\D/g, '')
+        const last9 = bareDigits.length >= 9 ? bareDigits.slice(-9) : bareDigits
+        return (
+          l.contact_name?.toLowerCase().includes(term) ||
+          l.phone_norm?.includes(term) ||
+          (last9.length >= 6 && l.phone_norm?.replace(/\D/g, '').includes(last9)) ||
+          l.suburb?.toLowerCase().includes(term) ||
+          l.lead_source?.toLowerCase().includes(term) ||
+          l.lead_id?.toLowerCase().includes(term) ||
+          String(l.wc_lead_id || '').includes(term) ||
+          l.all_jobnumbers?.includes(term) ||
+          label.includes(term)
+        )
+      })
     }
     return result
   }, [leads, search, needsReviewFilter])

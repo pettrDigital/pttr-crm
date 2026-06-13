@@ -53,6 +53,26 @@ Two customer types:
 - Recordings ingestion began ~2 Apr 2026; no 8x8 transcripts before that date
 - `raw_calls`: 72K rows, Apr 2024–present. `answered` = "Answered" / "-"
 - `call_transcripts`: 3.1K rows, Apr 2026–present
+- **Recording gap (~25% of answered inbound calls have no recording)**:
+  - Root cause: calls that overflow/forward to external mobiles via ring-group
+    overflow or follow-me rules (primarily DID 751 "Mr Washer - Temp", DID 750
+    "Mr Washer Generic", and forwarding DIDs like 726) leave the 8x8 PBX.
+    Recording is per-extension — an external forward creates no internal call
+    leg, no recording trigger, and no Storage API object.
+  - Confirmed via direct 8x8 Storage API test: 0/20 diverse gap call_ids
+    (different callers, DIDs, dates, talk times up to 4m42s) returned a
+    recording. 92.7% zero-leg rate on unrecorded calls vs 1.9% on recorded.
+  - This is an **8x8 routing/config issue**, NOT a CRM ingestion bug, NOT
+    recoverable by our code. Capture ceiling is ~75% under current routing.
+    Transcription rate of recorded calls: ~93% (Whisper).
+  - **Known minor bug** (not yet fixed): recording ingest (`pettr-recordings-
+    backfill` Cloud Run Job) advances watermark on transient 8x8 500 errors
+    without retry (6 occurrences in 30 days). Low impact — 8x8 purges the
+    objects before any recovery attempt. Should add retry-before-advance.
+  - **Implication for T7/UI**: a call with no transcript is often a genuine
+    source absence (forwarded-to-mobile), not a pipeline failure. Treat as
+    a normal touch with metadata only (caller phone, DID, duration, operator
+    from CDR) — do not classify as "missing data."
 
 ### WhatConverts (gd_WhatConverts.all_leads_enriched / all_leads_classified)
 - Tracks calls + web forms via tracking numbers and form integrations
@@ -533,19 +553,42 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 - [x] Operator resolution (call_legs → recordings → callee_name)
 - [x] WC revenue validation: accurate where tracked (91% exact), but covers
       only 21% of booked opps — AroFlo-bridged is revenue truth
+- [x] Lead interaction timeline (8 sources): WC interactions, raw_calls (phone),
+      email reply threads, form submissions, OfficeHQ pagers, MessageMedia SMS,
+      AroFlo task emails, general Outlook correspondence (3 link paths: email
+      match, JN-anchored, guarded subject-thread). Per-row defensive rendering.
+- [x] Per-call WC transcript resolution (interaction detail joins via spine
+      `call_id → wc_lead_id` mapping, not cluster primary)
+- [x] Leads search: matches PH-/WC-/EM-/JN- label + last-9-digit phone
+- [x] SMS-JN linkage tier: 232 Account-flagged opps, $553K attributed, COD
+      booking rate corrected via `crm_account_exclusions` table + getDashboardStats
+      LEFT JOIN anti-join
+- [x] WC reconciliation: 95.7% spine match, 38 gaps categorized, 1 genuine
+      unique signal (Chris Kelsey, name-only T7 case)
+- [x] Recording gap diagnosed: ~25% = mobile-forwarded calls, 8x8 routing issue,
+      ~75% capture ceiling. See §3 note.
 
 ### PLANNED
-- [ ] Answering-service email CONTENT STORE (§8) — full problem description +
-      address, keyed by opportunity_id, on detail page + classifier input.
-      High-value pre-April substitute for missing 8x8 transcripts.
+- [ ] **T7 INPUT FIX** — T7 (`scripts/ai-classify-validate.ts`) currently sees
+      only first call transcript / primary WC transcript / first form / primary
+      job description+notes, ZERO SMS/task-email/Outlook. Must change `ctx` to
+      pull ALL touches chronologically. The interactions route (Sources 1–8) is
+      the assembly spec. Changing input INVALIDATES prior blind validation —
+      must re-validate blind on corrected input before deploy.
+- [ ] **T7 deployment plumbing** — proposal queue (`action='proposed'` in
+      `crm_lead_overrides`), confirm/reject UI, scheduler, residual feed.
 - [ ] Funnel + economics DASHBOARD (discussion-paper layout) — headline rates,
       numbers-at-a-glance, per-campaign economics. Requires Firestore
       classification data for qualitative stages (Not Quotable / Not Booked).
       Spend reconciliation done (§11); UI build pending.
-- [ ] AI classification layer — deferred until manual classification builds
-      sufficient ground truth. Will use transcript + OHQ content + call
-      metadata. Firestore `updated_by` tagging already distinguishes
-      human / auto_rule / (future) ai_classify.
+- [ ] **vw_accounts repoint** — uses banned `task_invoices_total_ex` (+$22,992
+      overstatement across 7 clients). Repoint to `vw_job_invoiced` before any
+      Account revenue is reported externally.
+- [ ] **Recording ingest retry** — `pettr-recordings-backfill` advances watermark
+      on transient 8x8 500 errors without retry (6 in 30d). Add retry-before-
+      advance. Low priority (recordings purge before recovery).
+- [ ] Interaction timeline on Job view (`/jobs/{id}`) — shared component with
+      lead timeline. Join-key question (JN-only vs whole-opp) unresolved.
 
 ### SETTLED (economics phase prerequisites)
 - [x] Net-new counts tied out: 20 genuinely new, +19 baseline, ±1 from merge
