@@ -589,6 +589,13 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
       advance. Low priority (recordings purge before recovery).
 - [ ] Interaction timeline on Job view (`/jobs/{id}`) — shared component with
       lead timeline. Join-key question (JN-only vs whole-opp) unresolved.
+- [ ] **Dashboard booking rate definition** — the `getDashboardStats` Account-
+      exclusion anti-join is committed and correct as one input, but the displayed
+      rate's DENOMINATOR was never pinned to a single definition. AS-IS includes
+      `no_inbound` jobs (100% booked by definition → inflates all-time to ~80%,
+      meaningless). The true COD rate = `gap_based + job_matched` only, inbound,
+      Account-excluded (~24% on 30d). Fix the dashboard rate query to exclude
+      `no_inbound` from the denominator. Parked — not urgent.
 
 ### SETTLED (economics phase prerequisites)
 - [x] Net-new counts tied out: 20 genuinely new, +19 baseline, ±1 from merge
