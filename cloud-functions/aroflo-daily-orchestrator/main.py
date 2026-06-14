@@ -257,6 +257,22 @@ def daily_orchestrator(request):
         results["opportunities_rebuild"] = {"status": "error", "error": str(e)}
         # Log but don't fail the orchestrator — stale table is still usable
 
+    # --- REBUILD LEAD_TIMELINE TABLE (after opportunities — depends on opportunity_id) ---
+    # Materialised per-touch timeline: all 8 interaction sources, form content parsed,
+    # one row per touch per opportunity. Single source of truth for UI + classifier.
+    # Idempotent: CREATE OR REPLACE TABLE.
+    try:
+        print("Starting lead_timeline rebuild...")
+        timeline_sql = _get_lead_timeline_sql()
+        job = bq.query(timeline_sql, location="US")
+        job.result()
+        print(f"lead_timeline rebuild complete. Job state: {job.state}, job_id: {job.job_id}")
+        results["lead_timeline_rebuild"] = {"status": "success", "job_id": job.job_id}
+    except Exception as e:
+        error_msg = f"lead_timeline rebuild FAILED: {str(e)}"
+        print(error_msg)
+        results["lead_timeline_rebuild"] = {"status": "error", "error": str(e)}
+
     # --- AUTO-CLASSIFY AFTER-HOURS GAP CALLS (after opportunities rebuild) ---
     # Short after-hours calls (<20s) with no content at any source → Not Captured.
     # Runs server-side once daily, NOT on page load. Never overwrites human overrides.
@@ -366,5 +382,15 @@ def _get_opportunities_sql():
     Copied into the function deploy folder at deploy time."""
     import os
     sql_path = os.path.join(os.path.dirname(__file__), "build_opportunities.sql")
+    with open(sql_path) as f:
+        return f.read()
+
+
+def _get_lead_timeline_sql():
+    """Load build_lead_timeline.sql from the deploy folder.
+    Single source of truth: bigquery/build_lead_timeline.sql in crm-build repo.
+    Copied into the function deploy folder at deploy time."""
+    import os
+    sql_path = os.path.join(os.path.dirname(__file__), "build_lead_timeline.sql")
     with open(sql_path) as f:
         return f.read()

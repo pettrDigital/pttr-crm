@@ -10,6 +10,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cp "$REPO_ROOT/bigquery/build_opportunities.sql" "$SCRIPT_DIR/build_opportunities.sql"
 echo "Copied build_opportunities.sql from canonical source"
 
+cp "$REPO_ROOT/bigquery/build_lead_timeline.sql" "$SCRIPT_DIR/build_lead_timeline.sql"
+echo "Copied build_lead_timeline.sql from canonical source"
+
 gcloud functions deploy aroflo-daily-orchestrator \
   --project=pttr-taskdata \
   --region=australia-southeast1 \
