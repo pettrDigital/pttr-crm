@@ -146,20 +146,29 @@ no re-read. Two model calls only on residual opps; one (classify) on the rest.
 
 ## Build order (validate free via CC-as-classifier at each gate)
 
-1. **lead_timeline master query** → materialised table (incl. form content fix).
-   Validate: spot-check assembled timelines render full content; Unable-to-Classify
-   rate drops to genuine floor (tests + recording-gap only).
-2. **Deterministic match** confirmed/unchanged (it already runs).
-3. **Gate logic** (code): stage determination from facts, per spec. Validate:
+1. **lead_timeline master query** → materialised table — ✅ DONE (2026-06-14,
+   commit 9e7b768). Faithful port of `interactions/route.ts`, per-opp confirmed
+   identical, form content recovered, outlook_C noise fixed, 4 seeded opps
+   recovered. Table built and live; NO consumers repointed yet.
+2. **Repoint consumers to lead_timeline.** UI FIRST (eyeball-verifiable — open
+   leads, confirm timeline renders from the table and matches expectation), THEN
+   the classifier. This makes the table the single source of truth so UI = what
+   T7 sees. Do NOT skip the UI eyeball check before the classifier depends on it.
+   Drop the orphan `lead_interactions` / `vw_lead_email_timeline` /
+   `vw_contact_timeline` only after repoint confirms nothing else needs them.
+3. **Deterministic match** confirmed/unchanged (already runs via the graph —
+   verify it feeds the table correctly, not a rebuild).
+4. **Gate logic** (code): stage determination from facts, per spec. Validate:
    fence violations = 0 (no JN-bearing lead leaves Booked; no determined-complete
    sent to T7).
-4. **T7 residual matcher** (content signals, objective only). Validate blind on
+5. **T7 residual matcher** (content signals, objective only). Validate blind on
    the unlinked residual.
-5. **T7 classifier** constrained by gate, all definitions written. Validate blind
+6. **T7 classifier** constrained by gate, all definitions written. Validate blind
    per sub-status vs RG_006 AND WC comparison (crosswalked).
-6. **Re-run full blind** once clean; read per-class + the disagreement buckets.
-7. **Then** production engine + deployment plumbing (propose-only, queue,
-   confirm/reject UI). Separate step, after validation passes.
+7. **Full blind re-run** once clean; read per-class + the disagreement buckets.
+8. **Production engine + deployment plumbing** (propose-only, queue,
+   confirm/reject UI). After validation passes. Prerequisite: sync the UI
+   classification taxonomy to the new spec (it's on the old one — see UI impact).
 
 ---
 
@@ -200,9 +209,3 @@ no re-read. Two model calls only on residual opps; one (classify) on the rest.
 - 8x8 recording-ingest retry hardening (watermark advances on transient 500s).
 - Dashboard booking-rate denominator — parked until classification fills buckets.
 - The matcher (step 2) as a full project incl. its own blind validation set.
-- Path B short-JN substring match: JNs with ≤4 digits (e.g. "59", "33") match
-  unrelated email subjects via LIKE '%59%'. Pre-existing in the per-opp route
-  (sql.ts:321-323), carried through to `build_lead_timeline.sql`. 5 cross-opp
-  contamination cases found. Fix: require JN ≥5 digits or word-boundary match
-  (`CONCAT('%JN', jn, '%')` or `REGEXP_CONTAINS`). Out of scope for the
-  lead_timeline port — it's a pre-existing issue, not introduced by materialisation.
