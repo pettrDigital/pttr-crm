@@ -44,7 +44,7 @@ export const SUB_STATUS_TO_STAGE: Record<string, string> = {
   'Capacity / Scheduling': 'Not Booked',
   'Wanted Quote Over Phone': 'Not Booked',
   'Customer Resolved': 'Not Booked',
-  'PETTR Did Not Respond': 'Not Booked',
+  'No Follow-Up Recorded': 'Not Booked',
   'Other': 'Not Booked',
 
   // Booked (fence: JN exists)
@@ -83,7 +83,7 @@ export const NQ_NB_ALLOWED = [
   'Capacity / Scheduling',
   'Wanted Quote Over Phone',
   'Customer Resolved',
-  'PETTR Did Not Respond',
+  'No Follow-Up Recorded',
   'Other',
 ] as const
 
@@ -128,21 +128,22 @@ NOT QUOTABLE (the enquiry itself is not actionable):
 - "Not Job Related" — An internal/operational call: known staff member or DID marked [INTERNAL] discussing scheduling, inventory, HR, etc. NOT external sales pitches (those are Spam).
 
 NOT BOOKED (the enquiry was real and quotable, but didn't convert to a booking):
-- "Customer Unresponsive" — We attempted to contact the customer (outbound calls, SMS, email) but they did not respond, did not confirm, or went cold. Signal: multiple outbound call attempts with short durations (0-10s), unanswered voicemail, SMS with no reply.
+- "Customer Unresponsive" — We attempted to contact the customer and they did not respond. REQUIRES POSITIVE EVIDENCE: at least one outbound follow-up (call, SMS, or email) MUST be visible in the timeline. Signal: outbound calls with short durations (0-10s = unanswered), voicemail left, SMS sent with no reply. If NO outbound follow-up is visible in the timeline, use "No Follow-Up Recorded" instead.
 - "Tenant / Strata Referral" — The caller is a tenant/resident who needs strata manager or property manager approval to proceed. They have a real problem (plumbing/electrical) but cannot authorise the work themselves. Distinct from Strata Issue (above) where the issue itself is strata's responsibility.
 - "Price / Minimum Call Out" — Customer declined due to pricing: minimum call-out fee too high, quoted price unfavourable, or price comparison. The service was quotable and in-area.
 - "Capacity / Scheduling" — PETTR couldn't accommodate the timeline (fully booked, too far out) OR customer's schedule didn't align. The issue is timing/availability, not price or scope.
 - "Wanted Quote Over Phone" — Customer wanted a price estimate over the phone without booking a site visit. The enquiry ended at the phone-quote stage.
-- "Customer Resolved" — The problem resolved itself before we could attend (Sydney Water fixed the main, blockage cleared, power came back). No PETTR service was needed.
+- "Customer Resolved" — The problem resolved on its own OR the customer fixed/handled it themselves, BEFORE any PETTR booking or site visit. Examples: Sydney Water fixed the main, blockage cleared, power came back, customer replaced a part themselves. No PETTR service was provided or needed.
 - "Booked Elsewhere" — Customer told us they chose a competitor BEFORE any job was created with us. They explicitly said they're going with someone else.
-- "PETTR Did Not Respond" — PETTR failed to call back or follow up on a valid enquiry. The lead was lost due to our operational failure, not customer choice.
+- "No Follow-Up Recorded" — A valid enquiry where NO outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE, not a cause. Do NOT assert operational failure from absence — it may be a data gap. Use when: no outbound calls/SMS/emails visible after the initial inbound touch.
 - "Other" — Does not fit any defined category. Selecting this flags the lead for human review.
 
 DECISION RULES:
 1. If the caller is selling/pitching TO PETTR (cleaning, employment, office space, marketing, international caller) → "Spam"
 2. If the caller wants a service PETTR doesn't offer (not plumbing/electrical) → "Service Not Provided"
 3. If the caller is geographically outside Sydney metro → "Outside Service Area"
-4. If we tried to call back multiple times with no answer → "Customer Unresponsive"
+4. If outbound follow-up IS visible (calls/SMS/email sent) but customer didn't respond → "Customer Unresponsive"
+4a. If NO outbound follow-up is visible in the timeline → "No Follow-Up Recorded" (not Customer Unresponsive)
 5. If the caller explicitly mentioned price/cost as the reason for not proceeding → "Price / Minimum Call Out"
 6. If availability/timing was the barrier → "Capacity / Scheduling"
 7. If the caller said they found someone else / going elsewhere → "Booked Elsewhere"

@@ -221,14 +221,14 @@ Any GT row with stage = Not Booked AND a JN is a fence violation / GT error.
 
 | Sub-status | Definition | GT count |
 |---|---|---|
-| **Customer Unresponsive** | We attempted to contact the customer (outbound calls, SMS, email) but they did not respond, did not confirm, or did not return contact. Signal: outbound call pattern with short durations (0-10s), unanswered VM, SMS with no reply. The lead had a real enquiry but went cold. | 92 total (86 genuine no-JN, 6 fence violations — see §8) |
+| **Customer Unresponsive** | We attempted to contact the customer and they did not respond. REQUIRES POSITIVE EVIDENCE: ≥1 outbound follow-up (call, SMS, or email) MUST be visible in the timeline. Signal: outbound calls with short durations (0-10s = unanswered), VM left, SMS sent with no reply. If no outbound follow-up is visible in the timeline, use No Follow-Up Recorded instead — absence of recorded follow-up does not prove we tried. | 92 total (86 genuine no-JN, 6 fence violations — see §8) |
 | **Tenant / Strata Referral** | The caller is a tenant or strata resident who needs to go through their strata manager, body corporate, or property manager to authorise the work. Not a direct booking — the lead is redirected through a third-party approval chain. Distinct from Strata Issue (Not Quotable) where the issue itself is a strata responsibility, not just the approval pathway. | 20 (19 no-JN + 1 fence violation) |
 | **Price / Minimum Call Out** | Customer declined due to pricing — minimum call-out fee, quoted price too high, or price comparison unfavourable. The service is quotable and in-area, but the customer chose not to proceed on price. | 19 |
 | **Capacity / Scheduling** | PETTR couldn't accommodate the customer's timeline — fully booked, too far out, or couldn't meet the urgency. OR customer's schedule didn't align with available slots. The issue is timing/availability, not price or service scope. | 15 (14 no-JN + 1 fence violation) |
 | **Wanted Quote Over Phone** | Customer wanted a price estimate over the phone without booking a site visit. May or may not proceed — the enquiry ended at the phone-quote stage. | 11 (9 no-JN + 2 fence violations) |
-| **Customer Resolved** | The customer's problem resolved itself before we could attend — e.g. Sydney Water fixed the main, blockage cleared, power came back on. No PETTR service was needed. | 8 (thin) |
+| **Customer Resolved** | The customer's problem resolved on its own OR the customer fixed/handled it themselves, BEFORE any PETTR booking or site visit. Examples: Sydney Water fixed the main, blockage cleared, power came back, customer replaced a part themselves. No PETTR service was provided or needed. Pre-booking only — if a JN exists and the problem then resolved, that's Booking Cancelled (Booked stage). | 8 (thin) |
 | **Booked Elsewhere** | Customer told us they chose a competitor BEFORE any PETTR job was created. No JN exists. If a JN exists and the customer went elsewhere, that's Booking Cancelled (Booked stage). The boundary is purely whether a JN exists. | 0 in GT (phantom — but keep, may appear) |
-| **PETTR Did Not Respond** | PETTR failed to call back or follow up on a valid enquiry. The lead was lost due to our operational failure, not customer choice. Keep — unscored until GT coverage exists. | 0 in GT (phantom) |
+| **No Follow-Up Recorded** | A valid no-JN enquiry where NO outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE (no recorded follow-up), NOT a cause. Absence may be a real operational miss OR an un-ingested-channel gap — T7 must NOT assert failure from absence. A large count in this bucket is a signal for human operational review, not a classifier conclusion. Replaces former "PETTR Did Not Respond" (dropped: asserting our own failure from absence was unreliable). | 0 in GT (phantom) |
 | **Other** | Catch-all for leads that don't fit any defined category. When T7 selects this, it MUST surface for human review — it's a signal that the taxonomy needs extending, not a resting place. | 0 in GT (phantom) |
 
 ---
@@ -277,7 +277,7 @@ const SUB_STATUS_TO_STAGE: Record<string, string> = {
   'Capacity / Scheduling': 'Not Booked',
   'Wanted Quote Over Phone': 'Not Booked',
   'Customer Resolved': 'Not Booked',
-  'PETTR Did Not Respond': 'Not Booked',
+  'No Follow-Up Recorded': 'Not Booked',
   'Other': 'Not Booked',
 
   // Booked (fence: JN exists)
@@ -307,7 +307,7 @@ const SUB_STATUS_TO_STAGE: Record<string, string> = {
 // Not Booked
 'Customer Unresponsive', 'Booked Elsewhere', 'Tenant / Strata Referral',
 'Price / Minimum Call Out', 'Capacity / Scheduling', 'Wanted Quote Over Phone',
-'Customer Resolved', 'PETTR Did Not Respond', 'Other'
+'Customer Resolved', 'No Follow-Up Recorded', 'Other'
 ```
 
 T7 picks from the combined NQ + NB set. Stage is derived from the sub-status via `SUB_STATUS_TO_STAGE`.
