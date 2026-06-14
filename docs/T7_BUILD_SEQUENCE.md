@@ -209,3 +209,11 @@ no re-read. Two model calls only on residual opps; one (classify) on the rest.
 - 8x8 recording-ingest retry hardening (watermark advances on transient 500s).
 - Dashboard booking-rate denominator — parked until classification fills buckets.
 - The matcher (step 2) as a full project incl. its own blind validation set.
+- UI detail-click view for WPForms forms doesn't parse `additional_fields_json` —
+  shows name/phone only; full form problem text not reachable from detail view
+  (timeline list summary shows it, truncated ≤300 chars). Minor UI polish, not
+  a blocker.
+- Path B short-JN substring match: JNs with ≤4 digits (e.g. "59", "33") match
+  unrelated email subjects via LIKE '%59%'. Pre-existing in the per-opp route;
+  5 cross-opp contamination cases in lead_timeline. Fix: require JN ≥5 digits
+  or word-boundary match. Not introduced by materialisation.
