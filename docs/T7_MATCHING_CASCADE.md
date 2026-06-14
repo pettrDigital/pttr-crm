@@ -8,7 +8,47 @@ CLAUDE.md §7/§14–16.
 
 ---
 
-## What the cascade IS
+## AS-BUILT ARCHITECTURE (settled 2026-06-14 — read this first)
+
+The cascade COLLAPSED to two layers after the data showed the middle tiers don't
+earn their place. **Do not re-expand into seven tiers.**
+
+```
+Deterministic graph (T1–T3)  →  T7.1 matcher (residual only)  →  T7.2 classifier (ALL leads)
+   links the bulk, cheap         the ~25 hard unlinked the         funnel outcome label,
+   set-based, no model cost       graph can't link, AI content     gated on the resolved JN
+                                   reasoning, absorbs T4/T5/T6
+```
+
+- **T1–T3** = the deterministic clustering graph in `build_opportunities.sql`.
+  SHIPPED, unchanged. Links the bulk by phone/email/labeled-free-text. Runs first.
+- **T4 = RETIRED** (commit 41e078b). Fuzzy-phone as a standalone auto-link tier was
+  effectively empty (1 confirmable case of 12). NOT built into the graph. The
+  fuzzy-phone signal becomes one input T7.1 can weigh — nothing more.
+- **T5 / T6 = NOT BUILT, folded into T7.1.** The residual they targeted is
+  identity-mismatch (Account/strata, phone-mismatch) — structured rules can't
+  solve it (hundreds of false candidates / two-Steves trap); it needs content
+  reasoning. Confirmed by THREE reconciled analyses (WC recon, gate GT
+  disagreements, residual sizing) all pointing at the same ~25 leads as T7 work.
+  Target is ~25 over 6 months (~4/month) — far too small for a structured tier.
+- **T7.1 = matcher.** Runs on the RESIDUAL ONLY (the ~25 the graph couldn't link).
+  Reads lead content + job free-text + structured identity, proposes a job link
+  WITH evidence + value corroboration, or abstains. Absorbs the fuzzy-phone /
+  name+suburb / phone-mismatch signals that would have been T4/T5/T6.
+- **T7.2 = classifier.** Runs on ALL leads (graph-linked, T7.1-linked, or
+  unlinked). Applies the gate (JN → stage) and classifies the funnel sub-status
+  from content. See `t7_taxonomy_spec.md`.
+- **ORDER IS MANDATORY: T7.1 before T7.2.** The classification gate depends on
+  whether a JN exists; T7.1 resolves that for the residual. Same engine, same
+  content, two SEQUENTIAL passes — never one combined call.
+- **Separately:** 30→60d same-phone clustering window is a DISTINCT, tiny edge
+  (4 leads, same customer called twice 31–60d apart) — unrelated to the ~25
+  matching gap. Decide on it independently; it's a one-constant graph change, not
+  a tier.
+
+---
+
+## What the cascade WAS (historical — the tier definitions below predate the collapse)
 
 The ordered set of methods for linking an inbound lead (call/form/email) to its
 AroFlo job, collapsing touches into one opportunity. Each tier is MORE permissive
@@ -17,6 +57,9 @@ link is stamped with the tier that produced it.
 
 A lead with a clean phone match never reaches the lower tiers — only the hard
 residual does. This is why T7 (the AI tier) is cheap: it runs on leftovers only.
+
+(The T4/T5/T6 definitions below are retained for reference — they describe the
+signals T7.1 now absorbs, not separate tiers to build.)
 
 ---
 
@@ -36,17 +79,9 @@ residual does. This is why T7 (the AI tier) is cheap: it runs on leftovers only.
   **NOTE:** bare-mobile extraction was TESTED AND REJECTED (27 false-positive
   merges) — labeled-only auto-links; bare numbers go to propose tiers, never
   auto-link.
-- **~~T4 — Fuzzy phone, edit-distance-1~~ — RETIRED as standalone auto-link tier.**
-  Tested 2026-06-14. Edit-distance-1 across the full population found 248 pairs
-  (109 single-candidate). With a 60-day time guard: 11 candidates. Of those 11,
-  ZERO had a lead-side corroborating signal (name/address/value) — the lead side
-  is typically a bare phone with no WC contact name. Only 1 case (+61288584867 →
-  +61288554867, JN140830) is externally confirmable from the GT audit.
-  **Finding:** fuzzy-phone without corroboration cannot safely auto-link. The
-  signal (edit-distance-1 phone) folds into T5/T6 as one of the propose-tier
-  candidate signals — it is NOT a distinct auto-link rung. No code was added to
-  `build_opportunities.sql`; the single confirmable link is not worth a graph
-  extension that cannot be guarded against false merges on the other 10.
+- **T4 — Fuzzy phone, edit-distance-1, same length, SINGLE candidate only**
+  (catches transposition typos like 84867 vs 54867). Value-corroborate if any
+  ambiguity. (Specced, small.)
 
 ### — THE AUTO / PROPOSE LINE —
 
@@ -54,10 +89,8 @@ residual does. This is why T7 (the AI tier) is cheap: it runs on leftovers only.
 
 - **T5 — Phone-mismatch / different-number calls.** Caller's phone ≠ job's client
   phone (partner/neighbour/tenant called). Proposes via name + location + value
-  corroboration. Includes fuzzy-phone (edit-distance-1) as a candidate signal —
-  a near-miss phone strengthens the proposal but does NOT auto-link alone.
-  (Specced; may be superseded by T7 — bare structured name-matching threw
-  hundreds of false candidates, so the AI does this job better.)
+  corroboration. (Specced; may be superseded by T7 — bare structured name-matching
+  threw hundreds of false candidates, so the AI does this job better.)
 - **T6 — Fuzzy name + suburb, CORROBORATION-GATED.** Proposes ONLY if name+suburb
   match AND ≥1 of {exact value, full surname, exact address}. Bare
   first-name+suburb NEVER proposes (the "two Steves in Eastwood" trap). Common
@@ -161,10 +194,17 @@ T7 was blind-tested as a matcher and PASSED:
 
 ---
 
-## RELATIONSHIP TO T7-AS-CLASSIFIER
+## T7.1 (MATCHER) vs T7.2 (CLASSIFIER) — the two passes
 
-T7 does TWO jobs (settled this session): it is a MATCHER (this doc — which job an
-opportunity links to) AND a CLASSIFIER (`t7_taxonomy_spec.md` — the funnel
-sub-status). Order: deterministic match (T1–T4) → T7 residual match (T5/6 logic,
-done by AI) → T7 classification of ALL leads. Matching settles before classifying,
-because the classification gate depends on the JN the match produces.
+T7 is ONE engine doing TWO sequential jobs:
+
+- **T7.1 — matcher** (this doc). Population: the RESIDUAL only (~25 the graph
+  couldn't link). Reads lead content + job free-text + structured identity →
+  proposes a JN with evidence, or abstains. Absorbs the retired T4/T5/T6 signals.
+- **T7.2 — classifier** (`t7_taxonomy_spec.md`). Population: ALL leads
+  (graph-linked, T7.1-linked, or unlinked). Applies the gate (JN → stage) and
+  picks the funnel sub-status from content.
+
+**Order is mandatory: T7.1 → T7.2.** The classification gate depends on whether a
+JN exists, and T7.1 resolves that for the residual. Matching settles before
+classifying. Same engine, same content, two passes — never combined into one call.
