@@ -45,6 +45,16 @@ no re-read. Two model calls only on residual opps; one (classify) on the rest.
 - **One master query → materialised `lead_timeline` table**, built by a new
   `build_lead_timeline.sql`, orchestrated like `build_opportunities.sql`. NOT a
   view edit. Summary/metadata per touch; full 13k-char bodies fetch-on-demand.
+- **PROVENANCE — do not re-derive.** `build_lead_timeline.sql` is a faithful
+  PORT of the already-verified assembly logic in
+  `src/app/api/leads/[id]/interactions/route.ts` (the three Outlook paths A/B/C,
+  the Path C distinctiveness guard + generic-subject stop-list, the
+  double-render sender-exclusion list, the known-email-set construction —
+  built and verified 2026-06-13). The materialisation changes WHERE the logic
+  runs (set-based SQL vs per-request), never WHAT it is. Any future change to
+  timeline assembly happens in ONE place and propagates; never let a consumer
+  re-implement it from scratch (doing so dropped the Path C guard once and
+  produced 59k rows of thread-noise).
 - Both the classifier and the UI read this table (fixes the slow lead-open too).
 - Kills the ~6-queries-per-opp round-trip pattern (the 45-min harness / slow UI).
 
@@ -190,3 +200,9 @@ no re-read. Two model calls only on residual opps; one (classify) on the rest.
 - 8x8 recording-ingest retry hardening (watermark advances on transient 500s).
 - Dashboard booking-rate denominator — parked until classification fills buckets.
 - The matcher (step 2) as a full project incl. its own blind validation set.
+- Path B short-JN substring match: JNs with ≤4 digits (e.g. "59", "33") match
+  unrelated email subjects via LIKE '%59%'. Pre-existing in the per-opp route
+  (sql.ts:321-323), carried through to `build_lead_timeline.sql`. 5 cross-opp
+  contamination cases found. Fix: require JN ≥5 digits or word-boundary match
+  (`CONCAT('%JN', jn, '%')` or `REGEXP_CONTAINS`). Out of scope for the
+  lead_timeline port — it's a pre-existing issue, not introduced by materialisation.
