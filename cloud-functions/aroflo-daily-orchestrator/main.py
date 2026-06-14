@@ -25,6 +25,7 @@ DATASET_ID = "ds_aroflo"
 def daily_orchestrator(request):
     bq = bigquery.Client()
     date_start = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    invoice_date_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     results = {}
 
     # --- TASKS ---
@@ -54,7 +55,7 @@ def daily_orchestrator(request):
     print("Tasks merge complete")
 
     # --- INVOICES ---
-    r3 = requests.get(f"{INVOICES_URL}?mode=full&date_start={date_start}&max_pages=50", timeout=540)
+    r3 = requests.get(f"{INVOICES_URL}?mode=full&date_start={invoice_date_start}&max_pages=50", timeout=540)
     results["invoices"] = r3.json()
     print(f"Invoices Run 1: {r3.json()}")
 

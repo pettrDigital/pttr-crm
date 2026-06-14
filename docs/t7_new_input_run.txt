@@ -1,0 +1,209 @@
+◇ injected env (16) from .env.local // tip: ◈ secrets for agents [www.dotenvx.com]
+Loading ground truth from BQ...
+  694 rows, 493 judgement, 201 determined
+Assembling content — NEW (shared module — full timeline)...
+  Assembled 100/694...
+  Assembled 200/694...
+  Assembled 300/694...
+  Assembled 400/694...
+  Assembled 500/694...
+  Assembled 600/694...
+  Assembled 694/694...
+  Content for 677 opps
+  Scoring 493 judgement rows (201 determined excluded)
+  50/493...
+  100/493...
+  150/493...
+  200/493...
+  250/493...
+  300/493...
+  350/493...
+  400/493...
+  450/493...
+
+======================================================================
+  T7 HARNESS — RG006 (NEW (shared module — full timeline))
+======================================================================
+
+  Total judgement rows:  493
+  Classified:           469
+  Abstained:            24
+  Completed=true rows:  53 (excluded from stage accuracy)
+
+======================================================================
+  PER-SUB-STATUS ACCURACY (human × T7)
+======================================================================
+
+  Booking Cancelled (n=36, abstained=0):
+    Correct: 13/36 (36%)
+    → Job Pending: 14
+    → Quote Only: 2
+    → Booked Elsewhere: 2
+    → Customer Unresponsive: 2
+    → Job Complete: 2
+    → Strata Issue: 1
+
+  Capacity / Scheduling (n=15, abstained=0):
+    Correct: 7/15 (47%)
+    → Customer Unresponsive: 3
+    → Booked Elsewhere: 2
+    → Price / Minimum Call Out: 2
+    → Pending: 1
+
+  Customer Inquiry Only (n=2, abstained=0):
+    Correct: 0/2 (0%)
+    → Pending: 1
+    → Wrong Number / Contact Details: 1
+
+  Customer Resolved (n=7, abstained=1):
+    Correct: 1/7 (14%)
+    → Customer Inquiry Only: 2
+    → Customer Unresponsive: 1
+    → Pending: 1
+    → Wrong Number / Contact Details: 1
+    → Outside Service Area: 1
+
+  Customer Unresponsive (n=88, abstained=4):
+    Correct: 21/88 (24%)
+    → Job Pending: 12
+    → Wrong Number / Contact Details: 7
+    → Customer Inquiry Only: 7
+    → Outside Service Area: 4
+    → Capacity / Scheduling: 4
+    → Pending: 4
+    → Tenant / Strata Referral: 3
+    → Wanted Quote Over Phone: 3
+    → Customer Resolved: 3
+    → Quote Only: 3
+    → Dropped Call: 3
+    → Strata Issue: 2
+    → PETTR Did Not Respond: 2
+    → Booked Elsewhere: 2
+    → Job Complete: 2
+    → Booking Cancelled: 2
+    → Price / Minimum Call Out: 1
+    → Service Not Provided: 1
+    → Not Job Related: 1
+    → Unanswered Call: 1
+
+  Outside Service Area (n=7, abstained=1):
+    Correct: 6/7 (86%)
+    → Service Not Provided: 1
+
+  Price / Minimum Call Out (n=18, abstained=1):
+    Correct: 5/18 (28%)
+    → Customer Unresponsive: 6
+    → Tenant / Strata Referral: 2
+    → Job Pending: 2
+    → Service Not Provided: 2
+    → Wrong Number / Contact Details: 1
+
+  Quote Only (n=51, abstained=0):
+    Correct: 14/51 (27%)
+    → Job Complete: 22
+    → Unable to Complete Job - Out of Scope: 6
+    → Job Pending: 4
+    → Price / Minimum Call Out: 2
+    → Booked Elsewhere: 1
+    → Customer Inquiry Only: 1
+    → Customer Unresponsive: 1
+
+  Service Not Provided (n=82, abstained=4):
+    Correct: 45/82 (55%)
+    → Not Job Related: 12
+    → Wrong Number / Contact Details: 5
+    → Customer Unresponsive: 4
+    → Pending: 4
+    → Customer Inquiry Only: 4
+    → Quote Only: 3
+    → Spam: 2
+    → Strata Issue: 1
+    → Outside Service Area: 1
+    → Tenant / Strata Referral: 1
+
+  Spam (n=103, abstained=11):
+    Correct: 50/103 (49%)
+    → Outside Service Area: 20
+    → Not Job Related: 18
+    → Wrong Number / Contact Details: 11
+    → Pending: 2
+    → Customer Unresponsive: 1
+    → Service Not Provided: 1
+
+  Strata Issue (n=5, abstained=0):
+    Correct: 3/5 (60%)
+    → Tenant / Strata Referral: 1
+    → Customer Inquiry Only: 1
+
+  Tenant / Strata Referral (n=19, abstained=0):
+    Correct: 8/19 (42%)
+    → Strata Issue: 3
+    → Outside Service Area: 2
+    → Service Not Provided: 2
+    → Quote Only: 1
+    → Customer Inquiry Only: 1
+    → Pending: 1
+    → Customer Unresponsive: 1
+
+  Unable to Classify (n=1, abstained=0):
+    Correct: 0/1 (0%)
+    → Wanted Quote Over Phone: 1
+
+  Unable to Complete Job - Out of Scope (n=9, abstained=0):
+    Correct: 3/9 (33%)
+    → Job Complete: 2
+    → Quote Only: 2
+    → Job Pending: 2
+
+  Wanted Quote Over Phone (n=10, abstained=1):
+    Correct: 2/10 (20%)
+    → Wrong Number / Contact Details: 3
+    → Customer Inquiry Only: 2
+    → Quote Only: 1
+    → Price / Minimum Call Out: 1
+    → Job Pending: 1
+
+  Wrong Number / Contact Details (n=16, abstained=0):
+    Correct: 12/16 (75%)
+    → Outside Service Area: 1
+    → Unable to Classify: 1
+    → Technical Error: 1
+    → Spam: 1
+
+======================================================================
+  STAGE-LEVEL ACCURACY (completed=true excluded)
+======================================================================
+
+  Overall stage match: 315/416 (75.7%)
+  Booked               38/47 (81%)
+  Not Booked           80/153 (52%)
+  Not Captured         0/1 (0%)
+  Not Quotable         197/215 (92%)
+
+======================================================================
+  WITHIN-BOOKED SUB-STATUS (completed=true rows, raw model output)
+======================================================================
+
+  Overall within-Booked match: 16/53 (30.2%)
+  Booking Cancelled                        1/2 (50%)
+  Customer Unresponsive                    0/3 (0%)
+  Quote Only                               13/42 (31%)
+  Tenant / Strata Referral                 0/1 (0%)
+  Unable to Complete Job - Out of Scope    2/5 (40%)
+
+======================================================================
+  THIN CLASSES (n < 20)
+======================================================================
+  Capacity / Scheduling: n=15 classified=15 correct=7 abstained=0
+  Customer Inquiry Only: n=2 classified=2 correct=0 abstained=0
+  Customer Resolved: n=8 classified=7 correct=1 abstained=1
+  Outside Service Area: n=8 classified=7 correct=6 abstained=1
+  Price / Minimum Call Out: n=19 classified=18 correct=5 abstained=1
+  Strata Issue: n=5 classified=5 correct=3 abstained=0
+  Tenant / Strata Referral: n=19 classified=19 correct=8 abstained=0
+  Unable to Classify: n=1 classified=1 correct=0 abstained=0
+  Unable to Complete Job - Out of Scope: n=9 classified=9 correct=3 abstained=0
+  Wanted Quote Over Phone: n=11 classified=10 correct=2 abstained=1
+  Wrong Number / Contact Details: n=16 classified=16 correct=12 abstained=0
+
+Done.

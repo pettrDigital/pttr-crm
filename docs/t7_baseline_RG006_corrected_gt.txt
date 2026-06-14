@@ -1,0 +1,204 @@
+Loading ground truth from BQ...
+  694 rows, 493 judgement, 201 determined
+Assembling content...
+  Content for 677 opps
+  Scoring 493 judgement rows (201 determined excluded)
+  50/493...
+  100/493...
+  150/493...
+  200/493...
+  250/493...
+  300/493...
+  350/493...
+  400/493...
+  450/493...
+
+======================================================================
+  T7 HARNESS — RG006 GROUND TRUTH (JUDGEMENT ROWS ONLY)
+======================================================================
+
+  Total judgement rows:  493
+  Classified:           467
+  Abstained:            26
+
+======================================================================
+  PER-SUB-STATUS ACCURACY (human × T7)
+======================================================================
+
+  Booking Cancelled (n=35, abstained=1):
+    Correct: 6/35 (17%)
+    → Job Pending: 25
+    → Job Complete: 2
+    → Quote Only: 1
+    → Outside Service Area: 1
+
+  Capacity / Scheduling (n=15, abstained=0):
+    Correct: 7/15 (47%)
+    → Price / Minimum Call Out: 3
+    → Customer Unresponsive: 2
+    → Service Not Provided: 1
+    → Booked Elsewhere: 1
+    → Booking Cancelled: 1
+
+  Customer Inquiry Only (n=2, abstained=0):
+    Correct: 1/2 (50%)
+    → Outside Service Area: 1
+
+  Customer Resolved (n=6, abstained=2):
+    Correct: 0/6 (0%)
+    → Outside Service Area: 2
+    → Service Not Provided: 1
+    → Job Pending: 1
+    → Customer Inquiry Only: 1
+    → Pending: 1
+
+  Customer Unresponsive (n=88, abstained=4):
+    Correct: 4/88 (5%)
+    → Job Pending: 23
+    → Service Not Provided: 12
+    → Outside Service Area: 11
+    → Unable to Classify: 5
+    → Customer Inquiry Only: 5
+    → Pending: 5
+    → Capacity / Scheduling: 4
+    → Wanted Quote Over Phone: 4
+    → Price / Minimum Call Out: 3
+    → Quote Only: 3
+    → Job Complete: 3
+    → Strata Issue: 2
+    → Tenant / Strata Referral: 2
+    → Booked Elsewhere: 1
+    → Booking Cancelled: 1
+
+  Outside Service Area (n=4, abstained=0):
+    Correct: 0/4 (0%)
+    → Not Job Related: 1
+    → Strata Issue: 1
+    → Job Pending: 1
+    → Service Not Provided: 1
+
+  Price / Minimum Call Out (n=16, abstained=3):
+    Correct: 4/16 (25%)
+    → Job Pending: 4
+    → Service Not Provided: 3
+    → Outside Service Area: 2
+    → Tenant / Strata Referral: 1
+    → Wanted Quote Over Phone: 1
+    → Capacity / Scheduling: 1
+
+  Quote Only (n=51, abstained=0):
+    Correct: 1/51 (2%)
+    → Job Complete: 42
+    → Job Pending: 4
+    → Service Not Provided: 1
+    → Booked Elsewhere: 1
+    → Outside Service Area: 1
+    → Customer Inquiry Only: 1
+
+  Service Not Provided (n=87, abstained=3):
+    Correct: 43/87 (49%)
+    → Outside Service Area: 18
+    → Not Job Related: 11
+    → Customer Inquiry Only: 4
+    → Quote Only: 3
+    → Spam: 2
+    → Pending: 2
+    → Job Pending: 2
+    → Strata Issue: 1
+    → Dropped Call: 1
+
+  Spam (n=105, abstained=9):
+    Correct: 43/105 (41%)
+    → Outside Service Area: 36
+    → Not Job Related: 16
+    → Dropped Call: 4
+    → Service Not Provided: 2
+    → Vodafone Orphan: 2
+    → Customer Inquiry Only: 1
+    → Wrong Number / Contact Details: 1
+
+  Strata Issue (n=5, abstained=0):
+    Correct: 2/5 (40%)
+    → Customer Inquiry Only: 2
+    → Tenant / Strata Referral: 1
+
+  Tenant / Strata Referral (n=18, abstained=1):
+    Correct: 7/18 (39%)
+    → Strata Issue: 4
+    → Outside Service Area: 3
+    → Customer Inquiry Only: 1
+    → Dropped Call: 1
+    → Service Not Provided: 1
+    → Job Complete: 1
+
+  Unable to Classify (n=1, abstained=0):
+    Correct: 0/1 (0%)
+    → Quote Only: 1
+
+  Unable to Complete Job - Out of Scope (n=9, abstained=0):
+    Correct: 1/9 (11%)
+    → Job Complete: 5
+    → Job Pending: 2
+    → Quote Only: 1
+
+  Wanted Quote Over Phone (n=9, abstained=2):
+    Correct: 3/9 (33%)
+    → Quote Only: 2
+    → Price / Minimum Call Out: 2
+    → Outside Service Area: 1
+    → Customer Inquiry Only: 1
+
+  Wrong Number / Contact Details (n=16, abstained=0):
+    Correct: 9/16 (56%)
+    → Outside Service Area: 3
+    → Dropped Call: 2
+    → Spam: 1
+    → Unable to Classify: 1
+
+======================================================================
+  STAGE-LEVEL ACCURACY
+======================================================================
+
+  Overall stage match: 342/467 (73.2%)
+  Booked               90/95 (95%)
+  Not Booked           50/152 (33%)
+  Not Captured         0/1 (0%)
+  Not Quotable         202/219 (92%)
+
+======================================================================
+  THIN CLASSES (n < 20)
+======================================================================
+  Capacity / Scheduling: n=15 classified=15 correct=7 abstained=0
+  Customer Inquiry Only: n=2 classified=2 correct=1 abstained=0
+  Customer Resolved: n=8 classified=6 correct=0 abstained=2
+  Outside Service Area: n=4 classified=4 correct=0 abstained=0
+  Price / Minimum Call Out: n=19 classified=16 correct=4 abstained=3
+  Strata Issue: n=5 classified=5 correct=2 abstained=0
+  Tenant / Strata Referral: n=19 classified=18 correct=7 abstained=1
+  Unable to Classify: n=1 classified=1 correct=0 abstained=0
+  Unable to Complete Job - Out of Scope: n=9 classified=9 correct=1 abstained=0
+  Wanted Quote Over Phone: n=11 classified=9 correct=3 abstained=2
+  Wrong Number / Contact Details: n=16 classified=16 correct=9 abstained=0
+
+======================================================================
+  CONFUSION MATRIX (rows=GT, cols=T7)
+======================================================================
+                                BookedBookinCapaciCustomCustomCustomDroppeJob CoJob PeNot JoOutsidPendinPrice Quote Servic  SpamStrataTenantUnableUnableVodafoWantedWrong 
+  Booking Cancelled                  0     6     0     0     0     0     0     2    25     0     1     0     0     1     0     0     0     0     0     0     0     0     0
+  Capacity / Scheduling              1     1     7     0     0     2     0     0     0     0     0     0     3     0     1     0     0     0     0     0     0     0     0
+  Customer Inquiry Only              0     0     0     1     0     0     0     0     0     0     1     0     0     0     0     0     0     0     0     0     0     0     0
+  Customer Resolved                  0     0     0     1     0     0     0     0     1     0     2     1     0     0     1     0     0     0     0     0     0     0     0
+  Customer Unresponsive              1     1     4     5     0     4     0     3    23     0    11     5     3     3    12     0     2     2     5     0     0     4     0
+  Outside Service Area               0     0     0     0     0     0     0     0     1     1     0     0     0     0     1     0     1     0     0     0     0     0     0
+  Price / Minimum Call Out           0     0     1     0     0     0     0     0     4     0     2     0     4     0     3     0     0     1     0     0     0     1     0
+  Quote Only                         1     0     0     1     0     0     0    42     4     0     1     0     0     1     1     0     0     0     0     0     0     0     0
+  Service Not Provided               0     0     0     4     0     0     1     0     2    11    18     2     0     3    43     2     1     0     0     0     0     0     0
+  Spam                               0     0     0     1     0     0     4     0     0    16    36     0     0     0     2    43     0     0     0     0     2     0     1
+  Strata Issue                       0     0     0     2     0     0     0     0     0     0     0     0     0     0     0     0     2     1     0     0     0     0     0
+  Tenant / Strata Referral           0     0     0     1     0     0     1     1     0     0     3     0     0     0     1     0     4     7     0     0     0     0     0
+  Unable to Classify                 0     0     0     0     0     0     0     0     0     0     0     0     0     1     0     0     0     0     0     0     0     0     0
+  Unable to Complete Job - Out o     0     0     0     0     0     0     0     5     2     0     0     0     0     1     0     0     0     0     0     1     0     0     0
+  Wanted Quote Over Phone            0     0     0     1     0     0     0     0     0     0     1     0     2     2     0     0     0     0     0     0     0     3     0
+  Wrong Number / Contact Details     0     0     0     0     0     0     2     0     0     0     3     0     0     0     0     1     0     0     1     0     0     0     9
+
+Done.
