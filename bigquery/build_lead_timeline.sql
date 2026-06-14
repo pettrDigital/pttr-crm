@@ -704,6 +704,70 @@ opp_wc_flags AS (
   FROM `pttr-taskdata.ds_crm.opportunities` o
   JOIN `pttr-taskdata.gd_WhatConverts.all_leads_enriched` ale ON o.wc_lead_id = ale.lead_id
   WHERE o.wc_lead_id IS NOT NULL
+),
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DETERMINISTIC GATE: stage determination from facts (per t7_taxonomy_spec.md)
+-- One gate_stage per opportunity, denormalized onto every touch row.
+-- Fences enforced in code: JN→Booked; no-JN→never Booked; invoiced>0→C&I.
+-- ═══════════════════════════════════════════════════════════════════════
+-- Content check: does the opp have any usable content in its touches?
+opp_has_content AS (
+  SELECT opportunity_id,
+    LOGICAL_OR(
+      (interaction_summary IS NOT NULL AND LENGTH(interaction_summary) > 10)
+      OR body_source IN ('call', 'email_received', 'email_sent', 'wc_form', 'wc_call')
+    ) AS has_content
+  FROM combined
+  GROUP BY opportunity_id
+),
+-- Invoice: the ONLY determined-complete test (status string irrelevant)
+opp_invoice AS (
+  SELECT CAST(jobnumber AS STRING) AS jobnumber, invoiced_total_ex
+  FROM `pttr-taskdata.ds_aroflo.vw_job_invoiced`
+  WHERE invoiced_total_ex > 0
+),
+-- Account billing edge case: Archived + $0 + Account customer_type
+opp_account_archived AS (
+  SELECT DISTINCT CAST(tc.jobnumber AS STRING) AS jobnumber
+  FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+  WHERE tc.job_status = 'Archived' AND tc.customer_type = 'Account'
+),
+-- Gate computation: one row per opportunity
+opp_gate AS (
+  SELECT
+    o.opportunity_id,
+    CASE
+      -- Step 1: JN + invoiced > 0 → Completed and Invoiced (DETERMINED)
+      WHEN o.jobnumber IS NOT NULL AND inv.invoiced_total_ex IS NOT NULL
+        THEN 'determined:Completed and Invoiced'
+      -- Account billing review: JN + Archived + Account + $0
+      WHEN o.jobnumber IS NOT NULL AND act.jobnumber IS NOT NULL AND inv.invoiced_total_ex IS NULL
+        THEN 'determined:account_billing_review'
+      -- Step 2: JN exists → Booked (T7 picks within-Booked sub)
+      WHEN o.jobnumber IS NOT NULL
+        THEN 'judgement:Booked'
+      -- Step 3: Unanswered Call (call-type, no answered call, no content)
+      WHEN le.lead_type = 'call'
+        AND COALESCE(o.has_answered_call, FALSE) = FALSE
+        AND NOT COALESCE(oc.has_content, FALSE)
+        THEN 'determined:Not Captured / Unanswered Call'
+      -- Step 4: Dropped Call (answered, <20s, no content)
+      WHEN COALESCE(o.has_answered_call, FALSE) = TRUE
+        AND COALESCE(o.max_duration_sec, 0) < 20
+        AND NOT COALESCE(oc.has_content, FALSE)
+        THEN 'determined:Not Captured / Dropped Call'
+      -- Step 6: Unable to Classify (touch exists, no content, no JN)
+      WHEN COALESCE(oc.has_content, FALSE) = FALSE
+        THEN 'determined:Unable to Classify'
+      -- Step 7: Content exists, no JN → T7 judgement (NQ/NB)
+      ELSE 'judgement:NQ/NB'
+    END AS gate_stage
+  FROM `pttr-taskdata.ds_crm.opportunities` o
+  LEFT JOIN `pttr-taskdata.ds_crm.vw_lead_enriched` le ON o.opportunity_id = le.opportunity_id
+  LEFT JOIN opp_has_content oc ON o.opportunity_id = oc.opportunity_id
+  LEFT JOIN opp_invoice inv ON CAST(o.jobnumber AS STRING) = inv.jobnumber
+  LEFT JOIN opp_account_archived act ON CAST(o.jobnumber AS STRING) = act.jobnumber
 )
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -726,9 +790,11 @@ SELECT
   c.body_source,
   c.body_id,
   COALESCE(f.wc_spam, FALSE) AS wc_spam,
-  COALESCE(f.wc_is_test, FALSE) AS wc_is_test
+  COALESCE(f.wc_is_test, FALSE) AS wc_is_test,
+  g.gate_stage
 FROM combined c
 LEFT JOIN opp_wc_flags f ON c.opportunity_id = f.opportunity_id
+LEFT JOIN opp_gate g ON c.opportunity_id = g.opportunity_id
 -- Deduplicate: same interaction_id on same opportunity → keep first by touch_source priority
 QUALIFY ROW_NUMBER() OVER (
   PARTITION BY c.opportunity_id, c.interaction_id

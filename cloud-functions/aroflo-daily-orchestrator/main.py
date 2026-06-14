@@ -268,6 +268,27 @@ def daily_orchestrator(request):
         job.result()
         print(f"lead_timeline rebuild complete. Job state: {job.state}, job_id: {job.job_id}")
         results["lead_timeline_rebuild"] = {"status": "success", "job_id": job.job_id}
+
+        # Build lead_gate (one row per opp, deterministic stage from facts)
+        print("Building lead_gate...")
+        bq.query("""
+            CREATE OR REPLACE TABLE `pttr-taskdata.ds_crm.lead_gate` AS
+            SELECT DISTINCT opportunity_id, gate_stage
+            FROM `pttr-taskdata.ds_crm.lead_timeline`
+            WHERE gate_stage IS NOT NULL
+            UNION ALL
+            SELECT o.opportunity_id,
+              CASE
+                WHEN inv.invoiced_total_ex IS NOT NULL THEN 'determined:Completed and Invoiced'
+                WHEN act.jobnumber IS NOT NULL AND inv.invoiced_total_ex IS NULL THEN 'determined:account_billing_review'
+                ELSE 'judgement:Booked'
+              END AS gate_stage
+            FROM `pttr-taskdata.ds_crm.opportunities` o
+            LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` inv ON CAST(o.jobnumber AS STRING) = inv.jobnumber AND inv.invoiced_total_ex > 0
+            LEFT JOIN (SELECT DISTINCT CAST(jobnumber AS STRING) AS jobnumber FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE job_status = 'Archived' AND customer_type = 'Account') act ON CAST(o.jobnumber AS STRING) = act.jobnumber
+            WHERE o.opportunity_id NOT IN (SELECT DISTINCT opportunity_id FROM `pttr-taskdata.ds_crm.lead_timeline`)
+        """, location="US").result()
+        print("lead_gate rebuild complete")
     except Exception as e:
         error_msg = f"lead_timeline rebuild FAILED: {str(e)}"
         print(error_msg)
