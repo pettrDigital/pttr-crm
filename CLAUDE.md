@@ -559,6 +559,10 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
       match, JN-anchored, guarded subject-thread). Per-row defensive rendering.
 - [x] Per-call WC transcript resolution (interaction detail joins via spine
       `call_id → wc_lead_id` mapping, not cluster primary)
+- [x] WC transcript + full form content MATERIALISED into lead_timeline
+      `full_content` column. WC primary, 8x8 fallback (COALESCE). Forms
+      raised from 300→2000 chars. Readable by direct BQ query — no runtime
+      hydration needed. Deployed orchestrator rev 00023.
 - [x] Leads search: matches PH-/WC-/EM-/JN- label + last-9-digit phone
 - [x] SMS-JN linkage tier: 232 Account-flagged opps, $553K attributed, COD
       booking rate corrected via `crm_account_exclusions` table + getDashboardStats
@@ -569,12 +573,15 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
       ~75% capture ceiling. See §3 note.
 
 ### PLANNED
-- [ ] **T7 INPUT FIX** — T7 (`scripts/ai-classify-validate.ts`) currently sees
-      only first call transcript / primary WC transcript / first form / primary
-      job description+notes, ZERO SMS/task-email/Outlook. Must change `ctx` to
-      pull ALL touches chronologically. The interactions route (Sources 1–8) is
-      the assembly spec. Changing input INVALIDATES prior blind validation —
-      must re-validate blind on corrected input before deploy.
+- [x] **T7 INPUT FIX** — `full_content` column MATERIALISED into
+      `lead_timeline` (commit below). WC call transcript + full form content
+      readable by direct BQ query — no runtime hydration needed. Supersedes
+      the TS-only fallback in `classify.ts`. Per-call resolution preserved
+      (each touch gets its OWN WC transcript via ale.lead_id, not cluster
+      primary). Coverage: 712/745 WC calls (95.6%), 373/373 forms (100%),
+      952/18764 8x8-only calls (Whisper, May+ only). Form cap raised from
+      300→2000 chars. VERIFIED readable by direct BQ query. Orchestrator
+      deployed (rev 00023). Commits: see git log for build_lead_timeline.sql.
 - [ ] **T7 deployment plumbing** — proposal queue (`action='proposed'` in
       `crm_lead_overrides`), confirm/reject UI, scheduler, residual feed.
 - [ ] Funnel + economics DASHBOARD (discussion-paper layout) — headline rates,

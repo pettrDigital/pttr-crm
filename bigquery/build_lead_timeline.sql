@@ -88,6 +88,7 @@ recording_operators AS (
 -- ═══════════════════════════════════════════════════════════════════════
 wc_interactions AS (
   -- WC Phone Call interactions: match WC lead to 8x8 call by phone + ±5s timestamp
+  -- Transcript materialised: WC primary (per-call via ale.lead_id), 8x8 fallback.
   SELECT
     ow.opportunity_id,
     COALESCE(rc.call_id, CONCAT('wc-call-', CAST(ale.lead_id AS STRING))) AS interaction_id,
@@ -117,7 +118,10 @@ wc_interactions AS (
     rc.call_id,
     did.label AS called_did_label,
     CASE WHEN rc.call_id IS NOT NULL THEN 'call' ELSE 'wc_call' END AS body_source,
-    COALESCE(rc.call_id, CAST(ale.lead_id AS STRING)) AS body_id
+    COALESCE(rc.call_id, CAST(ale.lead_id AS STRING)) AS body_id,
+    -- Materialised transcript: WC primary (this call's own WC lead), 8x8 fallback.
+    -- Per-call resolution: ale.lead_id is THIS touch's WC lead, not the cluster primary.
+    COALESCE(ale.call_transcription, ct.full_transcript) AS full_content
   FROM opp_wc_ids ow
   JOIN `pttr-taskdata.gd_WhatConverts.all_leads_enriched` ale ON ow.wc_lead_id = ale.lead_id
   JOIN opp_anchors oa ON ow.opportunity_id = oa.opportunity_id
@@ -129,6 +133,8 @@ wc_interactions AS (
   LEFT JOIN `pttr-taskdata.ds_crm.lkp_did_trade` did ON rc.callee = did.did
   LEFT JOIN call_agents agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
   LEFT JOIN recording_operators rec ON rc.call_id = rec.call_id
+  -- 8x8 transcript fallback (only when WC transcript is null)
+  LEFT JOIN `pttr-taskdata.ds_crm.call_transcripts` ct ON rc.call_id = ct.call_id
   WHERE ale.lead_type = 'Phone Call'
     AND TIMESTAMP(DATETIME(ale.date_created, 'Australia/Sydney')) BETWEEN oa.window_start AND oa.window_end
 ),
@@ -167,7 +173,12 @@ phone_calls AS (
     rc.call_id,
     did.label AS called_did_label,
     'call' AS body_source,
-    rc.call_id AS body_id
+    rc.call_id AS body_id,
+    -- Materialised transcript: 8x8 primary. WC fallback via spine mapping.
+    COALESCE(
+      ct.full_transcript,
+      wc_ale.call_transcription
+    ) AS full_content
   FROM opp_phones op
   JOIN opp_anchors oa ON op.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_calls` rc
@@ -176,6 +187,13 @@ phone_calls AS (
   LEFT JOIN `pttr-taskdata.ds_crm.lkp_did_trade` did ON rc.callee = did.did
   LEFT JOIN call_agents agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
   LEFT JOIN recording_operators rec ON rc.call_id = rec.call_id
+  -- Transcript: 8x8 first
+  LEFT JOIN `pttr-taskdata.ds_crm.call_transcripts` ct ON rc.call_id = ct.call_id
+  -- WC transcript fallback: spine maps call_id → wc_lead_id → all_leads_enriched
+  LEFT JOIN `pttr-taskdata.ds_crm.vw_leads_unified` lu_wc
+    ON rc.call_id = lu_wc.lead_id AND lu_wc.wc_lead_id IS NOT NULL
+  LEFT JOIN `pttr-taskdata.gd_WhatConverts.all_leads_enriched` wc_ale
+    ON lu_wc.wc_lead_id = wc_ale.lead_id
 ),
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -211,7 +229,8 @@ email_thread_replies AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
-    reply.message_id AS body_id
+    reply.message_id AS body_id,
+    CAST(NULL AS STRING) AS full_content
   FROM form_conversations fc
   JOIN opp_anchors oa ON fc.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_received` reply
@@ -308,7 +327,9 @@ form_submissions AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'wc_form' AS body_source,
-    CAST(wc.lead_id AS STRING) AS body_id
+    CAST(wc.lead_id AS STRING) AS body_id,
+    -- Full form content (up to 2000 chars — matches classifier form budget)
+    LEFT(COALESCE(fc.form_content, wc.form_my_problem, ''), 2000) AS full_content
   FROM opp_wc_ids ow
   JOIN `pttr-taskdata.gd_WhatConverts.all_leads_enriched` wc ON ow.wc_lead_id = wc.lead_id
   LEFT JOIN wc_form_content fc ON wc.lead_id = fc.lead_id
@@ -330,7 +351,9 @@ form_submissions AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
-    REPLACE(lu.lead_id, 'email-', '') AS body_id
+    REPLACE(lu.lead_id, 'email-', '') AS body_id,
+    -- Full form content for email-parsed forms
+    LEFT(COALESCE(lu.form_problem, ''), 2000) AS full_content
   FROM opp_phones op
   JOIN opp_anchors oa ON op.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.vw_leads_unified` lu
@@ -353,7 +376,8 @@ form_submissions AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
-    REPLACE(lu.lead_id, 'email-', '') AS body_id
+    REPLACE(lu.lead_id, 'email-', '') AS body_id,
+    LEFT(COALESCE(lu.form_problem, lu.contact_name, ''), 2000) AS full_content
   FROM opp_anchors oa
   LEFT JOIN opp_phones op ON oa.opportunity_id = op.opportunity_id
   JOIN `pttr-taskdata.ds_crm.vw_leads_unified` lu
@@ -380,7 +404,8 @@ ohq_emails AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
-    e.message_id AS body_id
+    e.message_id AS body_id,
+    CAST(NULL AS STRING) AS full_content
   FROM opp_phones op
   JOIN opp_anchors oa ON op.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_received` e
@@ -426,7 +451,8 @@ sms_threads AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
-    message_id AS body_id
+    message_id AS body_id,
+    CAST(NULL AS STRING) AS full_content
   FROM (
     SELECT * FROM sms_by_phone
     UNION DISTINCT
@@ -451,7 +477,8 @@ task_emails AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     'email_sent' AS body_source,
-    e.message_id AS body_id
+    e.message_id AS body_id,
+    CAST(NULL AS STRING) AS full_content
   FROM opp_jobnumbers oj
   JOIN opp_anchors oa ON oj.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_sent` e
@@ -638,7 +665,8 @@ outlook_emails AS (
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
     CASE WHEN interaction_type LIKE '%Outbound%' THEN 'email_sent' ELSE 'email_received' END AS body_source,
-    message_id AS body_id
+    message_id AS body_id,
+    CAST(NULL AS STRING) AS full_content
   FROM outlook_all
 ),
 
@@ -822,6 +850,7 @@ SELECT
   c.called_did_label,
   c.body_source,
   c.body_id,
+  c.full_content,
   COALESCE(f.wc_spam, FALSE) AS wc_spam,
   COALESCE(f.wc_is_test, FALSE) AS wc_is_test,
   g.gate_stage
