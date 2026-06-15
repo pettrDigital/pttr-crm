@@ -723,15 +723,33 @@ opp_has_content AS (
 ),
 -- Invoice: the ONLY determined-complete test (status string irrelevant)
 opp_invoice AS (
-  SELECT CAST(jobnumber AS STRING) AS jobnumber, invoiced_total_ex
+  SELECT CAST(jobnumber AS STRING) AS jobnumber,
+    invoiced_total_ex,
+    credit_note_count
   FROM `pttr-taskdata.ds_aroflo.vw_job_invoiced`
   WHERE invoiced_total_ex > 0
+),
+-- Job status from tasks_complete (curated field, NOT tasks_deduped.status).
+-- Validated: job_status agrees with invoice-existence 99.1%, wins all 78
+-- disagreements. Completed=59,260 vs Archived=13,934.
+opp_job_status AS (
+  SELECT
+    CAST(tc.jobnumber AS STRING) AS jobnumber,
+    tc.job_status,
+    tc.customer_type
+  FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
 ),
 -- Account billing edge case: Archived + $0 + Account customer_type
 opp_account_archived AS (
   SELECT DISTINCT CAST(tc.jobnumber AS STRING) AS jobnumber
   FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
   WHERE tc.job_status = 'Archived' AND tc.customer_type = 'Account'
+),
+-- Credit note count for $0-invoiced jobs (neutral T7 hint, not a gate signal)
+opp_credit_notes AS (
+  SELECT CAST(jobnumber AS STRING) AS jobnumber, credit_note_count
+  FROM `pttr-taskdata.ds_aroflo.vw_job_invoiced`
+  WHERE credit_note_count > 0 AND (invoiced_total_ex IS NULL OR invoiced_total_ex <= 0)
 ),
 -- Gate computation: one row per opportunity
 opp_gate AS (
@@ -744,7 +762,21 @@ opp_gate AS (
       -- Account billing review: JN + Archived + Account + $0
       WHEN o.jobnumber IS NOT NULL AND act.jobnumber IS NOT NULL AND inv.invoiced_total_ex IS NULL
         THEN 'determined:account_billing_review'
-      -- Step 2: JN exists → Booked (T7 picks within-Booked sub)
+      -- Step 1b: JN + Archived + $0 → Booking Cancelled (DETERMINED)
+      -- Uses tasks_complete.job_status (curated), NOT tasks_deduped.status.
+      -- Archived = never completed/attended; lifecycle is over.
+      WHEN o.jobnumber IS NOT NULL AND js.job_status = 'Archived'
+        THEN 'determined:Booking Cancelled'
+      -- Step 1c: JN + Open + $0 → Job Pending (DETERMINED→constrained)
+      -- Job is still scheduled/open, not yet attended.
+      WHEN o.jobnumber IS NOT NULL AND js.job_status = 'Open'
+        THEN 'determined:Job Pending'
+      -- Step 1d: JN + Completed + $0 → T7 judgement (payment-regex + AI)
+      -- Completed with $0 invoiced: either Invoice Pending (money collected
+      -- but not yet invoiced) or Quote Only (attended but customer declined).
+      WHEN o.jobnumber IS NOT NULL AND js.job_status = 'Completed'
+        THEN 'judgement:Booked:completed_zero'
+      -- Step 2: JN exists, other status → Booked (T7 picks within-Booked sub)
       WHEN o.jobnumber IS NOT NULL
         THEN 'judgement:Booked'
       -- Step 3: Unanswered Call (call-type, no answered call, no content)
@@ -766,6 +798,7 @@ opp_gate AS (
   FROM `pttr-taskdata.ds_crm.opportunities` o
   LEFT JOIN `pttr-taskdata.ds_crm.vw_lead_enriched` le ON o.opportunity_id = le.opportunity_id
   LEFT JOIN opp_has_content oc ON o.opportunity_id = oc.opportunity_id
+  LEFT JOIN opp_job_status js ON CAST(o.jobnumber AS STRING) = js.jobnumber
   LEFT JOIN opp_invoice inv ON CAST(o.jobnumber AS STRING) = inv.jobnumber
   LEFT JOIN opp_account_archived act ON CAST(o.jobnumber AS STRING) = act.jobnumber
 )

@@ -165,10 +165,13 @@ Return ONLY this JSON:
 export type GateStage =
   | 'determined:Completed and Invoiced'
   | 'determined:account_billing_review'
+  | 'determined:Booking Cancelled'
+  | 'determined:Job Pending'
   | 'determined:Not Captured / Unanswered Call'
   | 'determined:Not Captured / Dropped Call'
   | 'determined:Unable to Classify'
   | 'judgement:Booked'
+  | 'judgement:Booked:completed_zero'
   | 'judgement:NQ/NB'
 
 export interface ClassificationResult {
@@ -217,6 +220,40 @@ export function resolveGate(gate_stage: string): {
         stage: 'Booked',
         confidence: 1.0,
         reasoning: 'Flagged: Archived + $0 + Account terms — manual review',
+        source_quote: '',
+        is_determined: true,
+      },
+      allowedSet: null,
+      systemPrompt: null,
+    }
+  }
+  // Archived + $0 → Booking Cancelled (determined by job_status)
+  if (gate_stage === 'determined:Booking Cancelled') {
+    return {
+      determined: {
+        opportunity_id: '',
+        gate_stage: gate_stage as GateStage,
+        sub_status: 'Booking Cancelled',
+        stage: 'Booked',
+        confidence: 1.0,
+        reasoning: 'Determined: job_status=Archived + $0 invoiced → never completed/attended',
+        source_quote: '',
+        is_determined: true,
+      },
+      allowedSet: null,
+      systemPrompt: null,
+    }
+  }
+  // Open + $0 → Job Pending (determined by job_status)
+  if (gate_stage === 'determined:Job Pending') {
+    return {
+      determined: {
+        opportunity_id: '',
+        gate_stage: gate_stage as GateStage,
+        sub_status: 'Job Pending',
+        stage: 'Booked',
+        confidence: 1.0,
+        reasoning: 'Determined: job_status=Open + $0 invoiced → still scheduled',
         source_quote: '',
         is_determined: true,
       },
@@ -281,6 +318,17 @@ export function resolveGate(gate_stage: string): {
       systemPrompt: BOOKED_SYSTEM_PROMPT,
     }
   }
+  // Completed + $0: payment-regex pre-pass, then T7 for residual.
+  // The caller should run applyPaymentRegex() on job notes BEFORE calling T7.
+  // If the regex resolves it, the caller uses the determined result.
+  // If not, T7 runs with the constrained Booked set.
+  if (gate_stage === 'judgement:Booked:completed_zero') {
+    return {
+      determined: null,
+      allowedSet: BOOKED_ALLOWED,
+      systemPrompt: BOOKED_SYSTEM_PROMPT,
+    }
+  }
   if (gate_stage === 'judgement:NQ/NB') {
     return {
       determined: null,
@@ -336,6 +384,15 @@ export interface KeywordMatch {
   matched_in: string  // which field matched (e.g. 'interaction_summary', 'form_content')
 }
 
+// Price-keyword routing: the keyword flags "declined on price"; the gate's
+// allowed-set check picks the stage. When "Price / Minimum Call Out" fires
+// but the lead is in the Booked set (JN exists), it routes to "Quote Only"
+// (a quote was given, declined on price). When the lead is in the NQ/NB set
+// (no JN), it stays as "Price / Minimum Call Out" (balked pre-quote).
+const PRICE_TO_BOOKED_REMAP: Record<string, string> = {
+  'Price / Minimum Call Out': 'Quote Only',
+}
+
 /**
  * Run keyword rules against a lead's content as a cheap deterministic pre-pass.
  * Returns the best match (highest confidence, longest term), or null.
@@ -344,7 +401,8 @@ export interface KeywordMatch {
  * Low-confidence matches flag for AI confirmation (AI still runs, but the keyword
  * match is passed as a hint).
  *
- * Only matches active rules within the gate's allowed set.
+ * Only matches active rules within the gate's allowed set (including price
+ * keywords that remap to a Booked-allowed sub-status via PRICE_TO_BOOKED_REMAP).
  */
 export function applyKeywordRules(
   content: string,
@@ -358,8 +416,17 @@ export function applyKeywordRules(
   let bestScore = -1  // prefer: high > low confidence, longer term > shorter
 
   for (const rule of rules) {
-    // Only match rules whose category is in the allowed set
-    if (!allowedSet.includes(rule.our_category)) continue
+    // Check if the category is directly in the allowed set
+    let effectiveCategory = rule.our_category
+    if (!allowedSet.includes(effectiveCategory)) {
+      // Check if it can remap for this allowed set (e.g. price → Quote Only for Booked)
+      const remapped = PRICE_TO_BOOKED_REMAP[effectiveCategory]
+      if (remapped && allowedSet.includes(remapped)) {
+        effectiveCategory = remapped
+      } else {
+        continue  // not allowed in this set, skip
+      }
+    }
 
     const term = rule.term.toLowerCase()
     let matched = false
@@ -379,10 +446,75 @@ export function applyKeywordRules(
       const score = (rule.confidence === 'high' ? 1000 : 0) + term.length
       if (score > bestScore) {
         bestScore = score
-        bestMatch = { rule, matched_in: 'content' }
+        // Return the effective (possibly remapped) category
+        bestMatch = {
+          rule: { ...rule, our_category: effectiveCategory },
+          matched_in: 'content',
+        }
       }
     }
   }
 
   return bestMatch
+}
+
+// ─── PAYMENT-REGEX PRE-PASS (Completed + $0 split) ────────────────────
+// For judgement:Booked:completed_zero — run BEFORE T7 to resolve
+// Invoice Pending (money collected) vs Quote Only (didn't proceed).
+// Returns a determined result if the regex matches, null otherwise.
+
+const PAYMENT_PATTERN = /\$\d+[\d,.]*\s*(?:\+\s*gst|plus\s*gst)|(?:collected|banked|paid|eft|card|cash)\s*[\$\d]/i
+const NOT_PROCEEDING_PATTERN = /(?:quote\s+only|not\s+going\s+ahead|too\s+expensive|declined|won'?t\s+proceed|didn'?t\s+proceed|not\s+proceed|getting\s+other\s+quotes|close\s+off|waste\s+of\s+time)/i
+
+export interface PaymentRegexResult {
+  sub_status: string
+  confidence: number
+  reasoning: string
+  source_quote: string
+}
+
+/**
+ * Payment-regex pre-pass for Completed + $0 jobs.
+ * Checks labour notes and task notes for payment or not-proceeding signals.
+ *
+ * @param labourNote - tech labour note text (may be null)
+ * @param taskNotes - task notes text (may be null)
+ * @param creditNoteCount - from vw_job_invoiced; >0 is a neutral hint passed to T7
+ * @returns determined result if regex matches, null if T7 should decide
+ */
+export function applyPaymentRegex(
+  labourNote: string | null,
+  taskNotes: string | null,
+  creditNoteCount: number = 0
+): PaymentRegexResult | null {
+  const combined = [labourNote, taskNotes].filter(Boolean).join('\n')
+  if (!combined) return null
+
+  // Check not-proceeding FIRST (more specific — avoids false Invoice Pending
+  // when notes say "quoted $500 but customer declined")
+  const notProceedingMatch = combined.match(NOT_PROCEEDING_PATTERN)
+  if (notProceedingMatch) {
+    return {
+      sub_status: 'Quote Only',
+      confidence: 0.9,
+      reasoning: `Payment-regex: not-proceeding pattern matched in notes`,
+      source_quote: notProceedingMatch[0],
+    }
+  }
+
+  // Check payment pattern
+  const paymentMatch = combined.match(PAYMENT_PATTERN)
+  if (paymentMatch) {
+    return {
+      sub_status: 'Completed - Invoice Pending',
+      confidence: 0.85,
+      reasoning: `Payment-regex: payment/collection pattern matched in notes`,
+      source_quote: paymentMatch[0],
+    }
+  }
+
+  // Neither matched — T7 decides. If credit_note_count > 0, the caller
+  // should pass that as a neutral hint in the prompt context, NOT as a
+  // gate signal.
+  return null
 }

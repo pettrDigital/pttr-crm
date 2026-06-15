@@ -1,6 +1,6 @@
 # T7 Taxonomy Spec — Determined Stage Gates + Sub-Status Definitions
 
-**Status**: DRAFT v2 — awaiting sign-off before any code changes.
+**Status**: v3 — gate rules for Booked $0 split built 2026-06-15.
 
 ---
 
@@ -52,11 +52,19 @@ Area (Not Quotable), not Dropped Call.
 | Stage | Determined or Judgement | Gate rule | T7 involvement |
 |---|---|---|---|
 | Booked (Completed and Invoiced) | **Determined** | `invoiced_total_ex > 0` | None — auto-assigned |
-| Booked (other sub-statuses) | **Judgement** | JN exists, `invoiced_total_ex` = 0 or NULL | T7 constrained to Booked sub-set |
+| Booked (Booking Cancelled) | **Determined** | JN exists, `job_status = 'Archived'`, $0 invoiced | None — auto-assigned. Uses `tasks_complete.job_status` (curated), NOT `tasks_deduped.status`. |
+| Booked (Job Pending) | **Determined** | JN exists, `job_status = 'Open'`, $0 invoiced | None — auto-assigned |
+| Booked (Completed + $0) | **Gate-assisted** | JN exists, `job_status = 'Completed'`, $0 invoiced | Payment-regex pre-pass → if matched: Invoice Pending / Quote Only (determined). If not: T7 constrained to Booked sub-set. `credit_note_count > 0` passed as neutral T7 hint, NOT a gate signal. |
+| Booked (other) | **Judgement** | JN exists, other job_status, $0 | T7 constrained to Booked sub-set |
 | Not Captured | **Determined** | Call-record facts (answered, duration) AND no content | None — auto-assigned |
 | Unable to Classify | **Determined** | Touch exists, zero content, no JN | None — auto-assigned |
 | Not Quotable | **Judgement** | No JN, content present | T7 picks from NQ + NB combined set |
 | Not Booked | **Judgement** | No JN, content present | T7 picks from NQ + NB combined set |
+
+**Note on job_status**: `tasks_complete.job_status` is the curated field that
+distinguishes Completed (59,260) from Archived (13,934). `tasks_deduped.status`
+is always 'Archived' for all closed jobs and MUST NOT be used. Validated:
+job_status agrees with invoice-existence 99.1% and wins all 78 disagreements.
 
 ---
 
@@ -182,11 +190,32 @@ No exceptions. T7 cannot move a lead out of Booked if a JN exists.
 - Rationale: $0-invoiced "Completed" jobs are quote visits (43 of 51 GT Quote Only rows are `job_status='Completed'` with $0 invoiced). Using `job_status` alone would auto-complete them incorrectly.
 
 ### Edge case: account billing review
-- Condition: `job_status = 'Archived'` AND `invoiced_total_ex` = 0 or NULL AND `payment_terms` contains "Day" (Account terms, not COD)
+- Condition: `job_status = 'Archived'` AND `invoiced_total_ex` = 0 or NULL AND `customer_type = 'Account'`
 - Action: tag as `account_billing_review`, exclude from T7, surface for manual review.
 - Rationale: ~20% of Account/Strata jobs have no per-job invoice (billed at Account level). These aren't $0 jobs — they're structurally uninvoiced.
+- **Evaluated before** the Archived→Booking Cancelled rule (Account takes priority).
 
-### T7 judgement sub-statuses (JN exists, $0 invoiced)
+### Determined: Archived + $0 → Booking Cancelled (gate, 2026-06-15)
+- Condition: `job_status = 'Archived'` AND `invoiced_total_ex` = 0 or NULL AND NOT Account
+- Gate: `determined:Booking Cancelled`
+- Rationale: Archived = job lifecycle ended without completion. Never attended/completed.
+
+### Determined: Open + $0 → Job Pending (gate, 2026-06-15)
+- Condition: `job_status = 'Open'` AND `invoiced_total_ex` = 0 or NULL
+- Gate: `determined:Job Pending`
+- Rationale: Job still scheduled/open, not yet attended.
+
+### Completed + $0 split (gate-assisted, 2026-06-15)
+- Condition: `job_status = 'Completed'` AND `invoiced_total_ex` = 0 or NULL
+- Gate: `judgement:Booked:completed_zero`
+- A payment-regex pre-pass runs on labour notes + task notes:
+  - **PAYMENT pattern** (`$X+gst`, `collected`, `eft`, `card`, `paid`, dollar amounts) → **Completed - Invoice Pending** (money collected, invoice not yet raised)
+  - **NOT-PROCEEDING pattern** (`quote only`, `not going ahead`, `too expensive`, `declined`, `won't proceed`) → **Quote Only** (attended but customer declined)
+  - **Neither / ambiguous** → T7 reads notes, decides Quote Only vs Invoice Pending
+  - NOT-PROCEEDING checked first (more specific — avoids false Invoice Pending on "quoted $500 but customer declined")
+- `credit_note_count > 0` (from `vw_job_invoiced`) → passed as a **neutral hint** to T7: "a refund/credit occurred; read notes to determine underlying outcome — still one of the normal Booked buckets, NOT a separate refund category." Not a gate signal, not an auto-assign.
+
+### T7 judgement sub-statuses (JN exists, $0 invoiced, after gate pre-pass)
 
 | Sub-status | Definition |
 |---|---|
@@ -196,9 +225,9 @@ No exceptions. T7 cannot move a lead out of Booked if a JN exists.
 | **Unable to Complete Job - Out of Scope** | We attended site but couldn't provide the service — requires different trade, structural issue, manufacturer issue, no RPZ valve, roofing work, etc. |
 | **Job Pending** | Job is booked/scheduled but not yet attended. No site visit, no quote, no outcome yet. Default when no content indicates an outcome. |
 
-### ungated_open (JN exists, job_status = 'Open')
-- Currently hits `FULL_SYSTEM_PROMPT` (`t7-harness-gated.ts:485-486`).
-- **Change**: route to constrained Booked prompt, same as `gated_booked`. A JN exists — stage is Booked regardless of AroFlo lifecycle state.
+### Open + $0 (JN exists, job_status = 'Open')
+- **BUILT (2026-06-15)**: `determined:Job Pending` — auto-assigned by gate.
+  Job is still scheduled/open, not yet attended. No T7 call needed.
 
 ### Label rename
 - Old `Job Complete` → split into:
