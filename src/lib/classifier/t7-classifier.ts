@@ -108,8 +108,9 @@ DECISION RULES:
 - If labour/task notes say "quote only", "not going ahead", "didn't proceed", "getting other quotes" → "Quote Only"
 - If customer cancelled/went elsewhere BEFORE any site visit → "Booking Cancelled"
 - If tech notes describe attending site but work was impossible/out of scope → "Unable to Complete Job - Out of Scope"
-- If job is Archived + $0 invoiced + NO notes showing work/collection → lean "Quote Only" or "Booking Cancelled" (NOT Job Pending — Archived means it's done, not pending)
-- If genuinely no outcome signal → "Job Pending" (the default for Open-status jobs with no notes)
+- If job is Archived + $0 invoiced + NO labour/task note showing work done or money collected → MUST be "Quote Only" or "Booking Cancelled" (NOT Job Pending). Archived means the job lifecycle is OVER — it cannot be pending. "Job Pending" is ONLY for jobs that appear genuinely still scheduled/open (not Archived, not Completed).
+- If genuinely no outcome signal AND the job status is Open/not-yet-attended → "Job Pending"
+- CRITICAL: a Booked-stage job that is Archived with $0 and no work note is a lead that DIDN'T PROCEED. Default to "Quote Only" if a site visit occurred (any labour note exists), or "Booking Cancelled" if no visit evidence. Never "Job Pending" for an Archived job.
 
 Return ONLY this JSON:
 {"sub_status":"...","confidence":0.XX,"reasoning":"one sentence","source_quote":"key phrase or null"}`
@@ -318,4 +319,70 @@ export function validateClassification(
   }
   // Gate violation — T7 returned something outside the allowed set
   return { valid: false, sub_status: `VIOLATION:${sub_status}` }
+}
+
+// ─── KEYWORD PRE-PASS ───────────────────────────────────────────────────
+
+export interface KeywordRule {
+  term: string
+  our_category: string
+  ferg_category: string | null
+  match_type: 'phrase' | 'word' | 'contains'
+  confidence: 'high' | 'low'
+}
+
+export interface KeywordMatch {
+  rule: KeywordRule
+  matched_in: string  // which field matched (e.g. 'interaction_summary', 'form_content')
+}
+
+/**
+ * Run keyword rules against a lead's content as a cheap deterministic pre-pass.
+ * Returns the best match (highest confidence, longest term), or null.
+ *
+ * High-confidence matches auto-classify (skip AI).
+ * Low-confidence matches flag for AI confirmation (AI still runs, but the keyword
+ * match is passed as a hint).
+ *
+ * Only matches active rules within the gate's allowed set.
+ */
+export function applyKeywordRules(
+  content: string,
+  rules: KeywordRule[],
+  allowedSet: readonly string[]
+): KeywordMatch | null {
+  if (!content || rules.length === 0) return null
+
+  const lowerContent = content.toLowerCase()
+  let bestMatch: KeywordMatch | null = null
+  let bestScore = -1  // prefer: high > low confidence, longer term > shorter
+
+  for (const rule of rules) {
+    // Only match rules whose category is in the allowed set
+    if (!allowedSet.includes(rule.our_category)) continue
+
+    const term = rule.term.toLowerCase()
+    let matched = false
+
+    if (rule.match_type === 'phrase') {
+      matched = lowerContent.includes(term)
+    } else if (rule.match_type === 'word') {
+      // Word boundary: term surrounded by non-alphanumeric or start/end
+      const re = new RegExp(`(?:^|[^a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^a-z0-9]|$)`)
+      matched = re.test(lowerContent)
+    } else {
+      // contains — simple substring
+      matched = lowerContent.includes(term)
+    }
+
+    if (matched) {
+      const score = (rule.confidence === 'high' ? 1000 : 0) + term.length
+      if (score > bestScore) {
+        bestScore = score
+        bestMatch = { rule, matched_in: 'content' }
+      }
+    }
+  }
+
+  return bestMatch
 }
