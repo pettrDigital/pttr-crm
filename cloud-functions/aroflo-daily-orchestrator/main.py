@@ -270,6 +270,9 @@ def daily_orchestrator(request):
         results["lead_timeline_rebuild"] = {"status": "success", "job_id": job.job_id}
 
         # Build lead_gate (one row per opp, deterministic stage from facts)
+        # Two sources: (1) opps with touches → gate from lead_timeline,
+        # (2) no-touch opps (JN-only) → gate from opportunities + job_status.
+        # Uses tasks_complete.job_status (curated), NOT tasks_deduped.status.
         print("Building lead_gate...")
         bq.query("""
             CREATE OR REPLACE TABLE `pttr-taskdata.ds_crm.lead_gate` AS
@@ -281,11 +284,15 @@ def daily_orchestrator(request):
               CASE
                 WHEN inv.invoiced_total_ex IS NOT NULL THEN 'determined:Completed and Invoiced'
                 WHEN act.jobnumber IS NOT NULL AND inv.invoiced_total_ex IS NULL THEN 'determined:account_billing_review'
+                WHEN js.job_status = 'Archived' THEN 'determined:Booking Cancelled'
+                WHEN js.job_status = 'Open' THEN 'determined:Job Pending'
+                WHEN js.job_status = 'Completed' THEN 'judgement:Booked:completed_zero'
                 ELSE 'judgement:Booked'
               END AS gate_stage
             FROM `pttr-taskdata.ds_crm.opportunities` o
             LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` inv ON CAST(o.jobnumber AS STRING) = inv.jobnumber AND inv.invoiced_total_ex > 0
             LEFT JOIN (SELECT DISTINCT CAST(jobnumber AS STRING) AS jobnumber FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE job_status = 'Archived' AND customer_type = 'Account') act ON CAST(o.jobnumber AS STRING) = act.jobnumber
+            LEFT JOIN (SELECT CAST(jobnumber AS STRING) AS jobnumber, job_status FROM `pttr-taskdata.ds_aroflo.tasks_complete`) js ON CAST(o.jobnumber AS STRING) = js.jobnumber
             WHERE o.opportunity_id NOT IN (SELECT DISTINCT opportunity_id FROM `pttr-taskdata.ds_crm.lead_timeline`)
         """, location="US").result()
         print("lead_gate rebuild complete")
