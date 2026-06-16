@@ -19,7 +19,7 @@
 
 export const SUB_STATUS_TO_STAGE: Record<string, string> = {
   // Not Captured (determined, no T7)
-  'Missed Call': 'Not Captured',
+  'Unanswered Call': 'Not Captured',
   'Dropped Call': 'Not Captured',
   'Technical Error': 'Not Captured',
 
@@ -167,7 +167,7 @@ export type GateStage =
   | 'determined:account_billing_review'
   | 'determined:Booking Cancelled'
   | 'determined:Job Pending'
-  | 'determined:Not Captured / Missed Call'
+  | 'determined:Not Captured / Unanswered Call'
   | 'determined:Not Captured / Dropped Call'
   | 'determined:Unable to Classify'
   | 'judgement:Booked'
@@ -261,13 +261,13 @@ export function resolveGate(gate_stage: string): {
       systemPrompt: null,
     }
   }
-  // Missed Call: no live human connection (unanswered, IVR-only, ring-out)
-  if (gate_stage === 'determined:Not Captured / Missed Call') {
+  // Unanswered Call: no live human connection (unanswered, IVR-only, ring-out)
+  if (gate_stage === 'determined:Not Captured / Unanswered Call') {
     return {
       determined: {
         opportunity_id: '',
         gate_stage: gate_stage as GateStage,
-        sub_status: 'Missed Call',
+        sub_status: 'Unanswered Call',
         stage: 'Not Captured',
         confidence: 1.0,
         reasoning: 'Determined: no live human connection on any call (IVR/greeting-only or unanswered)',

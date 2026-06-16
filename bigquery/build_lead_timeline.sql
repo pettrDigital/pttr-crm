@@ -230,7 +230,7 @@ email_thread_replies AS (
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
     reply.message_id AS body_id,
-    CAST(NULL AS STRING) AS full_content
+    LEFT(COALESCE(reply.body_text, reply.body_preview), 4000) AS full_content
   FROM form_conversations fc
   JOIN opp_anchors oa ON fc.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_received` reply
@@ -405,7 +405,8 @@ ohq_emails AS (
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
     e.message_id AS body_id,
-    CAST(NULL AS STRING) AS full_content
+    -- Full OHQ message body (customer details, problem description)
+    LEFT(COALESCE(e.body_text, e.body_preview), 4000) AS full_content
   FROM opp_phones op
   JOIN opp_anchors oa ON op.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_received` e
@@ -452,7 +453,8 @@ sms_threads AS (
     CAST(NULL AS STRING) AS called_did_label,
     'email_received' AS body_source,
     message_id AS body_id,
-    CAST(NULL AS STRING) AS full_content
+    -- Full SMS body (reply + original message)
+    LEFT(COALESCE(body_text, body_preview), 2000) AS full_content
   FROM (
     SELECT * FROM sms_by_phone
     UNION DISTINCT
@@ -478,7 +480,7 @@ task_emails AS (
     CAST(NULL AS STRING) AS called_did_label,
     'email_sent' AS body_source,
     e.message_id AS body_id,
-    CAST(NULL AS STRING) AS full_content
+    LEFT(COALESCE(e.body_text, e.body_preview), 4000) AS full_content
   FROM opp_jobnumbers oj
   JOIN opp_anchors oa ON oj.opportunity_id = oa.opportunity_id
   JOIN `pttr-taskdata.ds_crm.raw_emails_sent` e
@@ -653,21 +655,24 @@ outlook_all AS (
 ),
 outlook_emails AS (
   SELECT
-    opportunity_id,
-    message_id AS interaction_id,
+    oa.opportunity_id,
+    oa.message_id AS interaction_id,
     CAST(NULL AS INT64) AS lead_id,
-    interaction_type,
-    CONCAT('outlook_', link_path) AS touch_source,
-    DATETIME(received_at, 'Australia/Sydney') AS interaction_datetime,
-    operator AS interaction_operator,
+    oa.interaction_type,
+    CONCAT('outlook_', oa.link_path) AS touch_source,
+    DATETIME(oa.received_at, 'Australia/Sydney') AS interaction_datetime,
+    oa.operator AS interaction_operator,
     CAST(NULL AS INT64) AS interaction_duration_seconds,
-    LEFT(COALESCE(CONCAT('[', link_path, '] ', subject), body_preview, ''), 300) AS interaction_summary,
+    LEFT(COALESCE(CONCAT('[', oa.link_path, '] ', oa.subject), oa.body_preview, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
-    CASE WHEN interaction_type LIKE '%Outbound%' THEN 'email_sent' ELSE 'email_received' END AS body_source,
-    message_id AS body_id,
-    CAST(NULL AS STRING) AS full_content
-  FROM outlook_all
+    CASE WHEN oa.interaction_type LIKE '%Outbound%' THEN 'email_sent' ELSE 'email_received' END AS body_source,
+    oa.message_id AS body_id,
+    -- Full email body: join back to source for body_text
+    LEFT(COALESCE(er.body_text, es.body_text, oa.body_preview), 4000) AS full_content
+  FROM outlook_all oa
+  LEFT JOIN `pttr-taskdata.ds_crm.raw_emails_received` er ON oa.message_id = er.message_id
+  LEFT JOIN `pttr-taskdata.ds_crm.raw_emails_sent` es ON oa.message_id = es.message_id
 ),
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -834,6 +839,51 @@ opp_credit_notes AS (
   FROM `pttr-taskdata.ds_aroflo.vw_job_invoiced`
   WHERE credit_note_count > 0 AND (invoiced_total_ex IS NULL OR invoiced_total_ex <= 0)
 ),
+-- ═══════════════════════════════════════════════════════════════════════
+-- JOB CONTENT: materialised per-opportunity (not runtime-only)
+-- Full text, no truncation (matching spec §2.3).
+-- ═══════════════════════════════════════════════════════════════════════
+opp_job_content AS (
+  SELECT
+    o.opportunity_id,
+    -- Task description: full text, HTML stripped, preserving meaningful flags
+    LEFT(REGEXP_REPLACE(td.description, r'<[^>]+>|&nbsp;|&#\d+;', ' '), 8000) AS task_description,
+    -- Labour notes: ALL lines, ALL resources, ordered by workdate
+    -- NOT LIMIT 1 per lineid — ALL notes concatenated
+    ln.all_labour_notes,
+    -- Task notes: ALL authors, ALL notes, ordered by date
+    -- NOT LIMIT 5 — ALL notes concatenated
+    tn.all_task_notes
+  FROM `pttr-taskdata.ds_crm.opportunities` o
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
+    ON CAST(o.jobnumber AS STRING) = td.jobnumber
+  LEFT JOIN (
+    SELECT task_jobnumber AS jobnumber,
+      STRING_AGG(
+        CONCAT(COALESCE(workdate, ''), ': ', note),
+        '\n---\n' ORDER BY workdate, lineid
+      ) AS all_labour_notes
+    FROM (
+      SELECT task_jobnumber, note, workdate, lineid,
+        ROW_NUMBER() OVER (PARTITION BY task_jobnumber, lineid, note ORDER BY workdate DESC) AS rn
+      FROM `pttr-taskdata.ds_aroflo.tasklabours_raw`
+      WHERE note IS NOT NULL AND TRIM(note) != ''
+        AND (deleted IS NULL OR deleted != 'true')
+    ) WHERE rn = 1
+    GROUP BY task_jobnumber
+  ) ln ON CAST(o.jobnumber AS STRING) = ln.jobnumber
+  LEFT JOIN (
+    SELECT jobnumber,
+      STRING_AGG(
+        CONCAT(COALESCE(dateposted, ''), ' ', COALESCE(username, ''), ': ', COALESCE(note_clean, '')),
+        '\n' ORDER BY dateposted DESC
+      ) AS all_task_notes
+    FROM `pttr-taskdata.ds_aroflo.task_notes_deduped`
+    WHERE note_clean IS NOT NULL AND TRIM(note_clean) != ''
+    GROUP BY jobnumber
+  ) tn ON CAST(o.jobnumber AS STRING) = tn.jobnumber
+  WHERE o.jobnumber IS NOT NULL
+),
 -- Gate computation: one row per opportunity
 opp_gate AS (
   SELECT
@@ -863,14 +913,14 @@ opp_gate AS (
       WHEN o.jobnumber IS NOT NULL
         THEN 'judgement:Booked'
       -- ─── CALL DISPOSITION ───────────────────────────────────────────
-      -- Step 3: Missed Call — CDR-fact-first: has_answered_call = FALSE
+      -- Step 3: Unanswered Call — CDR-fact-first: has_answered_call = FALSE
       -- (nobody picked up per 8x8 CDR). The CDR is the PRIMARY authority.
       -- Transcript is REINFORCING only (post-April IVR-only confirms the
       -- miss), NEVER a replacement. Pre-April transcript absence = "not
       -- recorded," NOT "missed." AND no non-call content (forms/emails).
       WHEN COALESCE(o.has_answered_call, FALSE) = FALSE
         AND NOT COALESCE(oc.has_content, FALSE)
-        THEN 'determined:Not Captured / Missed Call'
+        THEN 'determined:Not Captured / Unanswered Call'
       -- Step 4: Dropped Call — live connection was made but line failed.
       -- CDR says answered, but transcript shows reception-failure language
       -- ("hello hello", "can't hear you", "breaking up", "cutting out")
@@ -918,11 +968,15 @@ SELECT
   c.body_source,
   c.body_id,
   c.full_content,
+  jc.task_description,
+  jc.all_labour_notes AS labour_notes,
+  jc.all_task_notes AS task_notes,
   COALESCE(f.wc_spam, FALSE) AS wc_spam,
   COALESCE(f.wc_is_test, FALSE) AS wc_is_test,
   g.gate_stage
 FROM combined c
 LEFT JOIN opp_wc_flags f ON c.opportunity_id = f.opportunity_id
+LEFT JOIN opp_job_content jc ON c.opportunity_id = jc.opportunity_id
 LEFT JOIN opp_gate g ON c.opportunity_id = g.opportunity_id
 -- Deduplicate: same interaction_id on same opportunity → keep first by touch_source priority
 QUALIFY ROW_NUMBER() OVER (
