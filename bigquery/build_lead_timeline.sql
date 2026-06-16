@@ -862,30 +862,27 @@ opp_gate AS (
       -- Step 2: JN exists, other status → Booked (T7 picks within-Booked sub)
       WHEN o.jobnumber IS NOT NULL
         THEN 'judgement:Booked'
-      -- ─── CALL DISPOSITION (transcript-based, replaces old duration-only rules) ───
-      -- Step 3: Wrong Number — caller reached a person, said "wrong number."
-      -- Checked FIRST because the caller necessarily spoke (>20 chars) to say
-      -- "wrong number", which makes has_content=TRUE via the call path.
-      -- Only fires when no non-call content (forms/emails) exists.
-      WHEN COALESCE(cd.has_wrong_number, FALSE)
-        AND NOT COALESCE(nc.has_non_call_content, FALSE)
-        THEN 'determined:Not Captured / Wrong Number'
-      -- Step 3b: Missed Call — no live human connection on ANY call, AND no
-      -- non-call content (forms/emails). Covers: unanswered/ring-out,
-      -- IVR/greeting-only (caller hung up during greeting), 0s calls.
-      WHEN NOT COALESCE(oc.has_content, FALSE)
-        AND COALESCE(cd.all_calls_missed, TRUE)
-        AND NOT COALESCE(cd.has_reception_failure, FALSE)
+      -- ─── CALL DISPOSITION ───────────────────────────────────────────
+      -- Step 3: Missed Call — CDR-fact-first: has_answered_call = FALSE
+      -- (nobody picked up per 8x8 CDR). The CDR is the PRIMARY authority.
+      -- Transcript is REINFORCING only (post-April IVR-only confirms the
+      -- miss), NEVER a replacement. Pre-April transcript absence = "not
+      -- recorded," NOT "missed." AND no non-call content (forms/emails).
+      WHEN COALESCE(o.has_answered_call, FALSE) = FALSE
+        AND NOT COALESCE(oc.has_content, FALSE)
         THEN 'determined:Not Captured / Missed Call'
-      -- Step 4: Dropped Call — live connection was made but line failed
-      -- (reception-failure language: "hello hello", "can't hear you",
-      -- "breaking up", "cutting out"), no substantive caller speech.
-      -- AND no non-call content that could classify the enquiry.
+      -- Step 4: Dropped Call — live connection was made but line failed.
+      -- CDR says answered, but transcript shows reception-failure language
+      -- ("hello hello", "can't hear you", "breaking up", "cutting out")
+      -- with no substantive caller speech. AND no non-call content.
       WHEN NOT COALESCE(oc.has_content, FALSE)
         AND COALESCE(cd.has_reception_failure, FALSE)
         AND NOT COALESCE(cd.has_live_exchange, FALSE)
         THEN 'determined:Not Captured / Dropped Call'
       -- Step 6: Unable to Classify (touch exists, no content, no JN)
+      -- Covers: answered calls with no transcript (pre-April or recording
+      -- gap) where no other content exists. The call connected but we
+      -- have no readable content to classify the enquiry.
       WHEN COALESCE(oc.has_content, FALSE) = FALSE
         THEN 'determined:Unable to Classify'
       -- Step 7: Content exists, no JN → T7 judgement (NQ/NB)

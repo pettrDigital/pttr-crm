@@ -378,7 +378,7 @@ applied FIRST, then summed (so a mixed cluster sums each job at its own basis).
 
 | Stage | Sub-Statuses |
 |---|---|
-| **Not Captured** | Dropped Call (auto), Unanswered Call (auto), Unable to Classify |
+| **Not Captured** | Missed Call (auto, CDR-fact-first), Dropped Call (auto, reception-failure transcript), Unable to Classify |
 | **Not Quotable** | Outside Service Area, Service Not Provided, Strata Issue, Spam, Customer Inquiry Only, Wrong Number / Contact Details, Technical Error |
 | **Pending** | Pending (with `pending_since` timestamp) |
 | **Not Booked** | Customer Unresponsive, Booked Elsewhere, Tenant / Strata Referral, Price / Minimum Call Out, Capacity / Scheduling, Wanted Quote Over Phone, Customer Resolved, Other (requires free-text note) |
@@ -562,7 +562,15 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 - [x] WC transcript + full form content MATERIALISED into lead_timeline
       `full_content` column. WC primary, 8x8 fallback (COALESCE). Forms
       raised from 300→2000 chars. Readable by direct BQ query — no runtime
-      hydration needed. Deployed orchestrator rev 00023.
+      hydration needed.
+- [x] Call-disposition gate (Missed/Dropped): CDR-fact-first design.
+      Missed Call = `has_answered_call = FALSE` (CDR primary, transcript
+      reinforcing only). Pre-April transcript absence ≠ missed. Dropped =
+      reception-failure language in transcript + no substantive exchange.
+      Wrong Number = T7-judgement (NOT gate-determined — content-pattern-
+      matching is judgement, not a fact-fence). Deployed rev 00025-qam.
+      CRITICAL: never gate-determine from transcript absence — absence
+      means "not recorded" pre-April, not "missed."
 - [x] Leads search: matches PH-/WC-/EM-/JN- label + last-9-digit phone
 - [x] SMS-JN linkage tier: 232 Account-flagged opps, $553K attributed, COD
       booking rate corrected via `crm_account_exclusions` table + getDashboardStats

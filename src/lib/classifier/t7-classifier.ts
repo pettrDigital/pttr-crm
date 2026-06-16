@@ -169,7 +169,6 @@ export type GateStage =
   | 'determined:Job Pending'
   | 'determined:Not Captured / Missed Call'
   | 'determined:Not Captured / Dropped Call'
-  | 'determined:Not Captured / Wrong Number'
   | 'determined:Unable to Classify'
   | 'judgement:Booked'
   | 'judgement:Booked:completed_zero'
@@ -289,23 +288,6 @@ export function resolveGate(gate_stage: string): {
         stage: 'Not Captured',
         confidence: 1.0,
         reasoning: 'Determined: live connection but line failed (reception-failure language, no substantive exchange)',
-        source_quote: '',
-        is_determined: true,
-      },
-      allowedSet: null,
-      systemPrompt: null,
-    }
-  }
-  // Wrong Number: caller reached a person and explicitly stated wrong number
-  if (gate_stage === 'determined:Not Captured / Wrong Number') {
-    return {
-      determined: {
-        opportunity_id: '',
-        gate_stage: gate_stage as GateStage,
-        sub_status: 'Wrong Number / Contact Details',
-        stage: 'Not Captured',
-        confidence: 1.0,
-        reasoning: 'Determined: caller explicitly stated wrong number in transcript',
         source_quote: '',
         is_determined: true,
       },
