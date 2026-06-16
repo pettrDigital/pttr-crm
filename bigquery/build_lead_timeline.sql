@@ -740,13 +740,68 @@ opp_wc_flags AS (
 -- Fences enforced in code: JN→Booked; no-JN→never Booked; invoiced>0→C&I.
 -- ═══════════════════════════════════════════════════════════════════════
 -- Content check: does the opp have any usable content in its touches?
+-- A call with only IVR/greeting text (no caller speech) is NOT usable content.
 opp_has_content AS (
   SELECT opportunity_id,
     LOGICAL_OR(
-      (interaction_summary IS NOT NULL AND LENGTH(interaction_summary) > 10)
-      OR body_source IN ('call', 'email_received', 'email_sent', 'wc_form', 'wc_call')
+      -- Non-call touches with summary = content
+      (body_source NOT IN ('call', 'wc_call')
+        AND (interaction_summary IS NOT NULL AND LENGTH(interaction_summary) > 10
+             OR body_source IN ('email_received', 'email_sent', 'wc_form')))
+      -- Call touches: only count as content if caller actually spoke (>20 chars)
+      OR (body_source IN ('call', 'wc_call')
+        AND full_content IS NOT NULL
+        AND REGEXP_CONTAINS(full_content, r'(?m)^Caller:?\n.{20,}'))
     ) AS has_content
   FROM combined
+  GROUP BY opportunity_id
+),
+-- Non-call content: does the opp have ANY non-call content (forms, emails)?
+-- Used by Wrong Number gate: wrong-number call + no form/email = gate-determined.
+opp_non_call_content AS (
+  SELECT opportunity_id,
+    LOGICAL_OR(
+      body_source NOT IN ('call', 'wc_call')
+      AND (interaction_summary IS NOT NULL AND LENGTH(interaction_summary) > 10
+           OR body_source IN ('email_received', 'email_sent', 'wc_form'))
+    ) AS has_non_call_content
+  FROM combined
+  GROUP BY opportunity_id
+),
+-- Call disposition signals: per-opp analysis of call transcript content.
+-- Used by the gate to determine Missed / Dropped / Wrong Number.
+opp_call_disposition AS (
+  SELECT opportunity_id,
+    -- Has ANY call where caller spoke substantively (>20 chars after "Caller\n")
+    LOGICAL_OR(
+      full_content IS NOT NULL
+      AND REGEXP_CONTAINS(full_content, r'(?m)^Caller:?\n.{20,}')
+    ) AS has_live_exchange,
+    -- Has a call with reception-failure language + no substantive caller speech
+    -- = genuine Dropped Call (line failed during greeting/early exchange)
+    LOGICAL_OR(
+      full_content IS NOT NULL
+      AND REGEXP_CONTAINS(full_content, r'(?i)hello.{0,5}hello|can.t hear|breaking up|cutting out|are you there|you.re breaking|can you hear me')
+      AND NOT REGEXP_CONTAINS(full_content, r'(?m)^Caller:?\n.{50,}')
+      AND LENGTH(full_content) < 500
+    ) AS has_reception_failure,
+    -- Has a call where caller explicitly said wrong number AND the call was
+    -- short (transcript < 500 chars = no substantive enquiry beyond the statement)
+    LOGICAL_OR(
+      full_content IS NOT NULL
+      AND REGEXP_CONTAINS(full_content, r'(?i)wrong number|got the wrong|didn.t mean to call|misdial')
+      AND REGEXP_CONTAINS(full_content, r'(?m)^Caller:?\n')
+      AND LENGTH(full_content) < 500
+    ) AS has_wrong_number,
+    -- All calls are IVR/greeting-only (no caller speech on ANY call)
+    -- TRUE when every call transcript is either null or has no substantive caller turn
+    LOGICAL_AND(
+      full_content IS NULL
+      OR NOT REGEXP_CONTAINS(full_content, r'(?m)^Caller:?\n.{20,}')
+    ) AS all_calls_missed
+  FROM combined
+  WHERE body_source IN ('call', 'wc_call')
+    AND interaction_type = 'Inbound Call'
   GROUP BY opportunity_id
 ),
 -- Invoice: the ONLY determined-complete test (status string irrelevant)
@@ -807,15 +862,28 @@ opp_gate AS (
       -- Step 2: JN exists, other status → Booked (T7 picks within-Booked sub)
       WHEN o.jobnumber IS NOT NULL
         THEN 'judgement:Booked'
-      -- Step 3: Unanswered Call (call-type, no answered call, no content)
-      WHEN le.lead_type = 'call'
-        AND COALESCE(o.has_answered_call, FALSE) = FALSE
-        AND NOT COALESCE(oc.has_content, FALSE)
-        THEN 'determined:Not Captured / Unanswered Call'
-      -- Step 4: Dropped Call (answered, <20s, no content)
-      WHEN COALESCE(o.has_answered_call, FALSE) = TRUE
-        AND COALESCE(o.max_duration_sec, 0) < 20
-        AND NOT COALESCE(oc.has_content, FALSE)
+      -- ─── CALL DISPOSITION (transcript-based, replaces old duration-only rules) ───
+      -- Step 3: Wrong Number — caller reached a person, said "wrong number."
+      -- Checked FIRST because the caller necessarily spoke (>20 chars) to say
+      -- "wrong number", which makes has_content=TRUE via the call path.
+      -- Only fires when no non-call content (forms/emails) exists.
+      WHEN COALESCE(cd.has_wrong_number, FALSE)
+        AND NOT COALESCE(nc.has_non_call_content, FALSE)
+        THEN 'determined:Not Captured / Wrong Number'
+      -- Step 3b: Missed Call — no live human connection on ANY call, AND no
+      -- non-call content (forms/emails). Covers: unanswered/ring-out,
+      -- IVR/greeting-only (caller hung up during greeting), 0s calls.
+      WHEN NOT COALESCE(oc.has_content, FALSE)
+        AND COALESCE(cd.all_calls_missed, TRUE)
+        AND NOT COALESCE(cd.has_reception_failure, FALSE)
+        THEN 'determined:Not Captured / Missed Call'
+      -- Step 4: Dropped Call — live connection was made but line failed
+      -- (reception-failure language: "hello hello", "can't hear you",
+      -- "breaking up", "cutting out"), no substantive caller speech.
+      -- AND no non-call content that could classify the enquiry.
+      WHEN NOT COALESCE(oc.has_content, FALSE)
+        AND COALESCE(cd.has_reception_failure, FALSE)
+        AND NOT COALESCE(cd.has_live_exchange, FALSE)
         THEN 'determined:Not Captured / Dropped Call'
       -- Step 6: Unable to Classify (touch exists, no content, no JN)
       WHEN COALESCE(oc.has_content, FALSE) = FALSE
@@ -826,6 +894,8 @@ opp_gate AS (
   FROM `pttr-taskdata.ds_crm.opportunities` o
   LEFT JOIN `pttr-taskdata.ds_crm.vw_lead_enriched` le ON o.opportunity_id = le.opportunity_id
   LEFT JOIN opp_has_content oc ON o.opportunity_id = oc.opportunity_id
+  LEFT JOIN opp_non_call_content nc ON o.opportunity_id = nc.opportunity_id
+  LEFT JOIN opp_call_disposition cd ON o.opportunity_id = cd.opportunity_id
   LEFT JOIN opp_job_status js ON CAST(o.jobnumber AS STRING) = js.jobnumber
   LEFT JOIN opp_invoice inv ON CAST(o.jobnumber AS STRING) = inv.jobnumber
   LEFT JOIN opp_account_archived act ON CAST(o.jobnumber AS STRING) = act.jobnumber

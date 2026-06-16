@@ -19,8 +19,8 @@
 
 export const SUB_STATUS_TO_STAGE: Record<string, string> = {
   // Not Captured (determined, no T7)
+  'Missed Call': 'Not Captured',
   'Dropped Call': 'Not Captured',
-  'Unanswered Call': 'Not Captured',
   'Technical Error': 'Not Captured',
 
   // Unable to Classify (determined, no T7)
@@ -167,8 +167,9 @@ export type GateStage =
   | 'determined:account_billing_review'
   | 'determined:Booking Cancelled'
   | 'determined:Job Pending'
-  | 'determined:Not Captured / Unanswered Call'
+  | 'determined:Not Captured / Missed Call'
   | 'determined:Not Captured / Dropped Call'
+  | 'determined:Not Captured / Wrong Number'
   | 'determined:Unable to Classify'
   | 'judgement:Booked'
   | 'judgement:Booked:completed_zero'
@@ -261,15 +262,16 @@ export function resolveGate(gate_stage: string): {
       systemPrompt: null,
     }
   }
-  if (gate_stage === 'determined:Not Captured / Unanswered Call') {
+  // Missed Call: no live human connection (unanswered, IVR-only, ring-out)
+  if (gate_stage === 'determined:Not Captured / Missed Call') {
     return {
       determined: {
         opportunity_id: '',
         gate_stage: gate_stage as GateStage,
-        sub_status: 'Unanswered Call',
+        sub_status: 'Missed Call',
         stage: 'Not Captured',
         confidence: 1.0,
-        reasoning: 'Determined: no answered call, no content',
+        reasoning: 'Determined: no live human connection on any call (IVR/greeting-only or unanswered)',
         source_quote: '',
         is_determined: true,
       },
@@ -277,6 +279,7 @@ export function resolveGate(gate_stage: string): {
       systemPrompt: null,
     }
   }
+  // Dropped Call: live connection made but line failed (reception-failure language)
   if (gate_stage === 'determined:Not Captured / Dropped Call') {
     return {
       determined: {
@@ -285,7 +288,24 @@ export function resolveGate(gate_stage: string): {
         sub_status: 'Dropped Call',
         stage: 'Not Captured',
         confidence: 1.0,
-        reasoning: 'Determined: answered but <20s, no content',
+        reasoning: 'Determined: live connection but line failed (reception-failure language, no substantive exchange)',
+        source_quote: '',
+        is_determined: true,
+      },
+      allowedSet: null,
+      systemPrompt: null,
+    }
+  }
+  // Wrong Number: caller reached a person and explicitly stated wrong number
+  if (gate_stage === 'determined:Not Captured / Wrong Number') {
+    return {
+      determined: {
+        opportunity_id: '',
+        gate_stage: gate_stage as GateStage,
+        sub_status: 'Wrong Number / Contact Details',
+        stage: 'Not Captured',
+        confidence: 1.0,
+        reasoning: 'Determined: caller explicitly stated wrong number in transcript',
         source_quote: '',
         is_determined: true,
       },
