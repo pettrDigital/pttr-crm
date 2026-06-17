@@ -845,11 +845,199 @@ WHERE m.customer_type = 'Account'
     SELECT opportunity_id FROM `pttr-taskdata.ds_crm.crm_account_exclusions`
   );
 
+-- ====== T3 job-side: extract 04XX from job desc/notes, match to gap_based opps ======
+-- Fixes two bugs: labeled-only extraction (bare Name+Phone missed) and
+-- first-match-only (REGEXP_EXTRACT returns one phone, REGEXP_EXTRACT_ALL gets all).
+-- Completes T3 with the lead-side tier above: both sides now extract all 04XX mobiles.
+-- Guards derived from corpus analysis (91K phone occurrences):
+--   Role keyword in before-80 → EXCLUDE (11 patterns + bldg abbreviation)
+--   Committee keyword in before-80 OR after-40 → include <5 jobs, defer ≥5
+--   Resident keyword in before-80 → INCLUDE always
+--   BARE + desc_freq ≥ 10 → EXCLUDE (all 10+ bare phones are building contacts)
+--   BARE + desc_freq < 10 → INCLUDE
+-- Single-candidate only. ±30d window. Account → account_linked + flags. COD → job_matched.
+
+CREATE TEMP TABLE t3_job_side_matches AS
+WITH
+-- Shared-line exclusion (3+ Account clients on structured phone)
+shared_line_phones AS (
+  SELECT phone FROM (
+    SELECT phone, COUNT(DISTINCT client_name) AS cc FROM (
+      SELECT norm_client_phone AS phone, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND norm_client_phone IS NOT NULL AND norm_client_phone != ''
+      UNION ALL SELECT norm_client_mobile, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+      UNION ALL SELECT id_phone, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND id_phone IS NOT NULL AND id_phone != ''
+    ) GROUP BY phone
+  ) WHERE cc >= 3
+),
+
+-- Gap_based opps still unlinked (not matched by graph, §5.1, T3 lead-side)
+unlinked_opps AS (
+  SELECT opportunity_id, phone, DATE(opportunity_timestamp) AS opp_date
+  FROM `pttr-taskdata.ds_crm.opportunities`
+  WHERE opp_type = 'gap_based' AND jobnumber IS NULL AND phone IS NOT NULL
+    AND phone NOT IN (SELECT phone FROM shared_line_phones)
+),
+
+-- Extract ALL 04XX phones from job descriptions (REGEXP_EXTRACT_ALL, not EXTRACT)
+desc_phones AS (
+  SELECT td.jobnumber, tc.requested_date_parsed AS job_date,
+    tc.customer_type, tc.task_type AS job_task_type, tc.job_status, tc.client_name,
+    CONCAT('+61', SUBSTR(pm, 2)) AS job_phone,
+    -- Before-80 context (stripped text for keyword matching)
+    LOWER(CASE WHEN STRPOS(stripped_desc, pm) > 80
+      THEN SUBSTR(stripped_desc, STRPOS(stripped_desc, pm) - 80, 80)
+      ELSE SUBSTR(stripped_desc, 1, GREATEST(0, STRPOS(stripped_desc, pm) - 1))
+    END) AS b80,
+    -- After-40 context (for committee detection only)
+    LOWER(SUBSTR(stripped_desc, STRPOS(stripped_desc, pm) + LENGTH(pm), 40)) AS a40
+  FROM (
+    SELECT td.jobnumber,
+      REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(td.description, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '), ' ', '') AS stripped_desc
+    FROM `pttr-taskdata.ds_aroflo.tasks_deduped` td
+  ) td
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber,
+  UNNEST(REGEXP_EXTRACT_ALL(td.stripped_desc, r'(04\d{8})')) AS pm
+),
+
+-- Extract ALL 04XX phones from task notes
+note_phones AS (
+  SELECT tn.jobnumber, tc.requested_date_parsed AS job_date,
+    tc.customer_type, tc.task_type AS job_task_type, tc.job_status, tc.client_name,
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(pm, r'[\s\-]', ''), 2)) AS job_phone,
+    LOWER(CASE WHEN STRPOS(REPLACE(tn.note_clean, ' ', ''), REGEXP_REPLACE(pm, r'[\s\-]', '')) > 80
+      THEN SUBSTR(REPLACE(tn.note_clean, ' ', ''),
+        STRPOS(REPLACE(tn.note_clean, ' ', ''), REGEXP_REPLACE(pm, r'[\s\-]', '')) - 80, 80)
+      ELSE SUBSTR(REPLACE(tn.note_clean, ' ', ''), 1,
+        GREATEST(0, STRPOS(REPLACE(tn.note_clean, ' ', ''), REGEXP_REPLACE(pm, r'[\s\-]', '')) - 1))
+    END) AS b80,
+    '' AS a40  -- notes don't need after-context (no structured contact blocks)
+  FROM `pttr-taskdata.ds_aroflo.task_notes_deduped` tn
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON tn.jobnumber = tc.jobnumber,
+  UNNEST(REGEXP_EXTRACT_ALL(tn.note_clean, r'(04\d\d[\s\-]?\d\d\d[\s\-]?\d\d\d)')) AS pm
+  WHERE LENGTH(REGEXP_REPLACE(pm, r'[\s\-]', '')) = 10
+),
+
+-- Combine desc + notes phones
+all_job_phones AS (
+  SELECT * FROM desc_phones
+  UNION DISTINCT
+  SELECT * FROM note_phones
+),
+
+-- Frequency: per phone, how many Account job descriptions contain it?
+phone_desc_freq AS (
+  SELECT job_phone, COUNT(DISTINCT jobnumber) AS desc_freq
+  FROM desc_phones
+  WHERE customer_type = 'Account'
+  GROUP BY job_phone
+),
+
+-- Apply guards: classify each phone occurrence
+guarded AS (
+  SELECT ajp.*,
+    COALESCE(pdf.desc_freq, 0) AS desc_freq,
+    -- Role keyword in BEFORE-80 only (avoids next-contact contamination)
+    REGEXP_CONTAINS(ajp.b80,
+      r'(?i)buildingmanager|bldgmanager|stratamanager|sitemanager|propertymanager|facilitymanager|facilitiesmanager|\(bm\)|bm[^a-z]|bm$|concierge|caretaker|realestate|agent'
+    ) AS is_role,
+    -- Committee in before-80 OR after-40
+    REGEXP_CONTAINS(CONCAT(ajp.b80, ' ', ajp.a40),
+      r'(?i)chairman|chairperson|secretary|ecmember|scmember|committeemember'
+    ) AS is_committee,
+    -- Resident in before-80
+    REGEXP_CONTAINS(ajp.b80,
+      r'(?i)owner|tenant|tnt|unit\d|resident|occupier'
+    ) AS is_resident
+  FROM all_job_phones ajp
+  LEFT JOIN phone_desc_freq pdf ON ajp.job_phone = pdf.job_phone
+),
+
+-- Apply decision rules
+filtered AS (
+  SELECT g.*,
+    CASE
+      WHEN g.is_role THEN 'ROLE_EXCLUDE'
+      WHEN g.is_committee AND COALESCE(g.desc_freq, 0) >= 5 THEN 'COMMITTEE_DEFER'
+      WHEN g.is_committee THEN 'COMMITTEE_INCLUDE'
+      WHEN g.is_resident AND COALESCE(g.desc_freq, 0) >= 10 THEN 'RESIDENT_FREQ_EXCLUDE'
+      WHEN g.is_resident THEN 'RESIDENT_INCLUDE'
+      WHEN COALESCE(g.desc_freq, 0) >= 10 THEN 'BARE_FREQ_EXCLUDE'
+      ELSE 'BARE_INCLUDE'
+    END AS guard_decision
+  FROM guarded g
+),
+
+-- Keep only INCLUDE decisions
+included AS (
+  SELECT * FROM filtered
+  WHERE guard_decision IN ('COMMITTEE_INCLUDE', 'RESIDENT_INCLUDE', 'BARE_INCLUDE')
+),
+
+-- Join: unlinked opp phone = job-extracted phone, within ±30d
+matched AS (
+  SELECT DISTINCT
+    uo.opportunity_id, uo.phone AS opp_phone, uo.opp_date,
+    inc.jobnumber, inc.job_date, inc.customer_type,
+    inc.job_task_type, inc.job_status, inc.client_name,
+    DATE_DIFF(inc.job_date, uo.opp_date, DAY) AS days_diff
+  FROM unlinked_opps uo
+  JOIN included inc ON uo.phone = inc.job_phone
+  WHERE ABS(DATE_DIFF(inc.job_date, uo.opp_date, DAY)) <= 30
+),
+
+-- Single-candidate constraint: only link when exactly 1 job matches per opp
+candidate_counts AS (
+  SELECT opportunity_id, COUNT(DISTINCT jobnumber) AS job_candidates
+  FROM matched
+  GROUP BY opportunity_id
+),
+
+single AS (
+  SELECT m.*,
+    ROW_NUMBER() OVER (PARTITION BY m.opportunity_id ORDER BY ABS(m.days_diff), m.jobnumber) AS rn
+  FROM matched m
+  JOIN candidate_counts cc ON m.opportunity_id = cc.opportunity_id
+  WHERE cc.job_candidates = 1
+)
+
+SELECT opportunity_id, opp_phone, jobnumber, job_task_type, job_status,
+  client_name, customer_type, days_diff
+FROM single
+WHERE rn = 1;
+
+-- Apply T3 job-side links
+UPDATE `pttr-taskdata.ds_crm.opportunities` o
+SET
+  o.jobnumber        = m.jobnumber,
+  o.job_task_type    = m.job_task_type,
+  o.job_status       = m.job_status,
+  o.job_count        = 1,
+  o.all_jobnumbers   = m.jobnumber,
+  o.opp_type         = CASE WHEN m.customer_type = 'Account' THEN 'account_linked'
+                             ELSE 'job_matched' END
+FROM t3_job_side_matches m
+WHERE o.opportunity_id = m.opportunity_id;
+
+-- Insert Account matches into crm_account_exclusions
+INSERT INTO `pttr-taskdata.ds_crm.crm_account_exclusions`
+  (opportunity_id, is_account, provenance, synced_at,
+   jobnumber, matched_phone, account_client, match_tier, invoiced_ex, days_lead_to_job)
+SELECT
+  m.opportunity_id, TRUE, 'auto:t3_job_content_phone', CURRENT_TIMESTAMP(),
+  m.jobnumber, m.opp_phone, m.client_name, 'auto:t3_job_content_phone',
+  COALESCE(inv.invoiced_total_ex, 0), m.days_diff
+FROM t3_job_side_matches m
+LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` inv ON m.jobnumber = inv.jobnumber
+WHERE m.customer_type = 'Account'
+  AND m.opportunity_id NOT IN (
+    SELECT opportunity_id FROM `pttr-taskdata.ds_crm.crm_account_exclusions`
+  );
+
 -- ====== §6 post-link: Refresh crm_account_exclusions.opportunity_id ======
 -- After rebuild, G- IDs have changed. Refresh using stable keys so the
 -- dashboard anti-join (queries.ts:653) continues working.
 
--- Linked rows: generic refresh for ALL tiers (§5.1 + SMS-JN + T3 content-phone)
+-- Linked rows: generic refresh for ALL tiers (§5.1 + SMS-JN + T3 content-phone + T3 job-side)
 -- Joins on stable keys (matched_phone + jobnumber) → rebuilt opportunity_id
 UPDATE `pttr-taskdata.ds_crm.crm_account_exclusions` excl
 SET excl.opportunity_id = o.opportunity_id,
