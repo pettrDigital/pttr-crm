@@ -623,3 +623,95 @@ WHERE EXISTS (
   WHERE pfj.phone = o.phone
     AND pfj.first_job_date < DATE(o.opportunity_timestamp_sydney)
 );
+
+-- ====== §6: Link verified Account jobs to gap_based opportunities ======
+-- Derives links from crm_account_exclusions using stable keys (matched_phone +
+-- jobnumber). No dependency on opportunity_id (which changes on rebuild).
+-- Multi-opp phone disambiguation: for each (phone, jobnumber) pair, pick the
+-- gap_based opp whose timestamp is closest to the job's requestdate within
+-- the tier's time window (forward 30d for resident_phone, ±30d for sms_jn).
+CREATE TEMP TABLE account_link_matches AS
+WITH candidates AS (
+  SELECT
+    excl.matched_phone,
+    excl.jobnumber,
+    excl.match_tier,
+    o.opportunity_id,
+    tc.task_type AS job_task_type,
+    tc.job_status,
+    DATE_DIFF(tc.requested_date_parsed, DATE(o.opportunity_timestamp), DAY) AS days_opp_to_job,
+    ROW_NUMBER() OVER (
+      PARTITION BY excl.matched_phone, excl.jobnumber
+      ORDER BY ABS(DATE_DIFF(tc.requested_date_parsed,
+                              DATE(o.opportunity_timestamp), DAY))
+    ) AS rn
+  FROM `pttr-taskdata.ds_crm.crm_account_exclusions` excl
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    ON excl.jobnumber = tc.jobnumber
+  JOIN `pttr-taskdata.ds_crm.opportunities` o
+    ON excl.matched_phone = o.phone
+   AND o.opp_type = 'gap_based'
+  WHERE excl.jobnumber IS NOT NULL
+    AND excl.matched_phone IS NOT NULL
+    AND (
+      -- resident_phone_tier: forward 0–30d only
+      (excl.match_tier = 'auto:resident_phone_tier'
+        AND DATE_DIFF(tc.requested_date_parsed,
+                      DATE(o.opportunity_timestamp), DAY) BETWEEN 0 AND 30)
+      OR
+      -- sms_jn_tier: bidirectional ±30d
+      (excl.match_tier = 'auto:sms_jn_tier'
+        AND ABS(DATE_DIFF(tc.requested_date_parsed,
+                          DATE(o.opportunity_timestamp), DAY)) <= 30)
+    )
+)
+SELECT matched_phone, jobnumber, match_tier, opportunity_id,
+       job_task_type, job_status, days_opp_to_job
+FROM candidates
+WHERE rn = 1;
+
+-- Apply the Account job links to gap_based opportunities
+UPDATE `pttr-taskdata.ds_crm.opportunities` o
+SET
+  o.jobnumber        = m.jobnumber,
+  o.job_task_type    = m.job_task_type,
+  o.job_status       = m.job_status,
+  o.job_count        = 1,
+  o.all_jobnumbers   = m.jobnumber,
+  o.opp_type         = 'account_linked'
+FROM account_link_matches m
+WHERE o.opportunity_id = m.opportunity_id;
+
+-- ====== §6 post-link: Refresh crm_account_exclusions.opportunity_id ======
+-- After rebuild, G- IDs have changed. Refresh using stable keys so the
+-- dashboard anti-join (queries.ts:653) continues working.
+
+-- Linked rows: match via (matched_phone, jobnumber) → account_linked opp
+UPDATE `pttr-taskdata.ds_crm.crm_account_exclusions` excl
+SET excl.opportunity_id = m.opportunity_id,
+    excl.synced_at = CURRENT_TIMESTAMP()
+FROM account_link_matches m
+WHERE excl.matched_phone = m.matched_phone
+  AND excl.jobnumber = m.jobnumber;
+
+-- Flag-only rows (no jobnumber): match via matched_phone → most recent gap_based opp.
+-- For multi-opp phones, pick the latest opp (most likely to appear in dashboard).
+UPDATE `pttr-taskdata.ds_crm.crm_account_exclusions` excl
+SET excl.opportunity_id = best.opportunity_id,
+    excl.synced_at = CURRENT_TIMESTAMP()
+FROM (
+  SELECT e2.matched_phone, o.opportunity_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY e2.matched_phone
+      ORDER BY o.opportunity_timestamp DESC
+    ) AS rn
+  FROM `pttr-taskdata.ds_crm.crm_account_exclusions` e2
+  JOIN `pttr-taskdata.ds_crm.opportunities` o
+    ON e2.matched_phone = o.phone
+  WHERE e2.jobnumber IS NULL
+    AND e2.matched_phone IS NOT NULL
+    AND o.opp_type IN ('gap_based', 'account_linked')
+) best
+WHERE excl.matched_phone = best.matched_phone
+  AND excl.jobnumber IS NULL
+  AND best.rn = 1;

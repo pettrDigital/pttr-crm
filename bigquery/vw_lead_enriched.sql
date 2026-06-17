@@ -343,7 +343,11 @@ SELECT
   CAST(NULL AS STRING) AS lead_class,
   CAST(NULL AS FLOAT64) AS confidence,
   CAST(NULL AS STRING) AS reasoning,
-  CAST(NULL AS BOOL) AS needs_review
+  CAST(NULL AS BOOL) AS needs_review,
+
+  -- §6: Account flags from crm_account_exclusions
+  COALESCE(acct_excl.is_account, FALSE) AS is_account,
+  COALESCE(acct_excl.is_account, FALSE) AS exclude_from_analysis
 
 FROM `pttr-taskdata.ds_crm.opportunities` o
 LEFT JOIN `pttr-taskdata.ds_crm.lkp_did_trade` lkp_did
@@ -439,4 +443,7 @@ LEFT JOIN (
   AND TIMESTAMP(ohq.received_at) BETWEEN
     TIMESTAMP_SUB(o.opportunity_timestamp, INTERVAL 1 MINUTE)
     AND TIMESTAMP_ADD(o.opportunity_timestamp, INTERVAL 10 MINUTE)
-  AND ohq.ohq_name IS NOT NULL;
+  AND ohq.ohq_name IS NOT NULL
+-- §6: Account flags
+LEFT JOIN `pttr-taskdata.ds_crm.crm_account_exclusions` acct_excl
+  ON o.opportunity_id = acct_excl.opportunity_id;

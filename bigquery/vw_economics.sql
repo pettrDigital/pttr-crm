@@ -58,6 +58,7 @@ leads_by_segment AS (
     COUNTIF(le.answered = TRUE) AS answered,
     COUNTIF(le.captured = TRUE) AS captured
   FROM `pttr-taskdata.ds_crm.vw_lead_enriched` le
+  WHERE NOT COALESCE(le.exclude_from_analysis, FALSE)
   GROUP BY 1, 2, 3, 4
 ),
 
