@@ -169,12 +169,12 @@ export async function fetchFacts(
       le.contact_name, le.phone, le.suburb,
       tc.client_name,
       tc.address_suburb AS client_address,
-      cd.contactname AS job_contact_name
+      CONCAT(COALESCE(cd.firstname, ''), ' ', COALESCE(cd.lastname, '')) AS job_contact_name
     FROM \`${ds}.vw_lead_enriched\` le
     LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
-      ON le.jobnumber = tc.jobnumber
+      ON le.job_numbers = tc.jobnumber
     LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td
-      ON le.jobnumber = td.jobnumber
+      ON le.job_numbers = td.jobnumber
     LEFT JOIN \`pttr-taskdata.ds_aroflo.contacts_deduped\` cd
       ON td.contact_userid = cd.userid
       AND td.contact_userid IS NOT NULL AND td.contact_userid != ''

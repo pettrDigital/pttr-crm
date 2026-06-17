@@ -682,17 +682,183 @@ SET
 FROM account_link_matches m
 WHERE o.opportunity_id = m.opportunity_id;
 
+-- ====== T3 lead-side: extract 04XX from lead content, match to jobs ======
+-- Completes T3 per spec: "Free-text phone/email extraction from BOTH sides —
+-- lead (transcript/form) AND job." Job-side T3 is in the clustering graph;
+-- this is the lead-side half, running post-graph.
+-- For gap_based opps still unlinked after §6, extract non-primary 04XX mobiles
+-- from lead_timeline.full_content and match against task_description + task_notes.
+-- Single-candidate only (ambiguous multi-matches excluded).
+-- Account jobs get §5.1 guards; COD jobs link directly.
+
+CREATE TEMP TABLE content_phone_matches AS
+WITH
+-- Step 1: Extract non-primary 04XX phones from lead content
+lead_phones AS (
+  SELECT DISTINCT
+    lt.opportunity_id,
+    o.phone AS lead_phone,
+    DATE(o.opportunity_timestamp) AS lead_date,
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(extracted, r'[\s\-]', ''), 2)) AS content_phone
+  FROM `pttr-taskdata.ds_crm.lead_timeline` lt
+  JOIN `pttr-taskdata.ds_crm.opportunities` o ON lt.opportunity_id = o.opportunity_id,
+  UNNEST(REGEXP_EXTRACT_ALL(lt.full_content,
+    r'(04[\d][\d][\s\-]?[\d][\d][\d][\s\-]?[\d][\d][\d])')) AS extracted
+  WHERE lt.full_content IS NOT NULL AND lt.full_content != ''
+    AND LENGTH(REGEXP_REPLACE(extracted, r'[\s\-]', '')) = 10
+    AND o.opp_type = 'gap_based'  -- only unlinked opps
+    AND o.jobnumber IS NULL        -- not already linked by §6
+    AND CONCAT('+61', SUBSTR(REGEXP_REPLACE(extracted, r'[\s\-]', ''), 2)) != o.phone
+),
+
+-- Shared-line exclusion (reuse from §6 — 3+ Account clients)
+shared_line_phones AS (
+  SELECT phone FROM (
+    SELECT phone, COUNT(DISTINCT client_name) AS cc FROM (
+      SELECT norm_client_phone AS phone, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND norm_client_phone IS NOT NULL AND norm_client_phone != ''
+      UNION ALL SELECT norm_client_mobile, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+      UNION ALL SELECT id_phone, client_name FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND id_phone IS NOT NULL AND id_phone != ''
+    ) GROUP BY phone
+  ) WHERE cc >= 3
+),
+
+-- Step 2: Search job descriptions for extracted phones
+desc_hits AS (
+  SELECT lp.opportunity_id, lp.content_phone, lp.lead_date,
+    td.jobnumber, tc.requested_date_parsed AS job_date,
+    tc.customer_type, tc.task_type AS job_task_type, tc.job_status, tc.client_name,
+    td.description,
+    DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY) AS days_diff
+  FROM lead_phones lp
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
+    ON REPLACE(REPLACE(td.description, ' ', ''), '&nbsp;', '')
+       LIKE CONCAT('%', SUBSTR(lp.content_phone, 4), '%')
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
+  WHERE ABS(DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY)) <= 30
+    AND lp.content_phone NOT IN (SELECT phone FROM shared_line_phones)
+),
+
+-- Search task notes for extracted phones
+note_hits AS (
+  SELECT lp.opportunity_id, lp.content_phone, lp.lead_date,
+    tn.jobnumber, tc.requested_date_parsed AS job_date,
+    tc.customer_type, tc.task_type AS job_task_type, tc.job_status, tc.client_name,
+    CAST(NULL AS STRING) AS description,
+    DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY) AS days_diff
+  FROM lead_phones lp
+  JOIN `pttr-taskdata.ds_aroflo.task_notes_deduped` tn
+    ON REPLACE(tn.note_clean, ' ', '')
+       LIKE CONCAT('%', SUBSTR(lp.content_phone, 4), '%')
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON tn.jobnumber = tc.jobnumber
+  WHERE ABS(DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY)) <= 30
+    AND lp.content_phone NOT IN (SELECT phone FROM shared_line_phones)
+),
+
+all_hits AS (
+  SELECT * FROM desc_hits
+  UNION DISTINCT
+  SELECT * FROM note_hits
+),
+
+-- Keyword exclusion guard for Account jobs (same as §5.1)
+-- Check 50 chars before the phone in description for Agent/Manager/BM
+guarded AS (
+  SELECT h.*,
+    CASE
+      WHEN h.customer_type = 'Account' AND h.description IS NOT NULL THEN
+        REGEXP_CONTAINS(
+          CASE
+            WHEN STRPOS(REPLACE(REPLACE(h.description, ' ', ''), '&nbsp;', ''),
+                        SUBSTR(h.content_phone, 4)) > 50
+            THEN SUBSTR(h.description,
+                   STRPOS(REPLACE(REPLACE(h.description, ' ', ''), '&nbsp;', ''),
+                          SUBSTR(h.content_phone, 4)) - 50, 50)
+            ELSE ''
+          END,
+          r'(?i)(?:\bAgent\b|\bManager\b|\(BM\)|\bBM\s|\bB/M\b|Real\s*Estate|Property\s*Manager)')
+      ELSE FALSE
+    END AS keyword_excluded
+  FROM all_hits h
+),
+
+-- Description-level frequency guard for Account jobs (3+ jobs = excluded)
+desc_freq AS (
+  SELECT content_phone
+  FROM guarded
+  WHERE customer_type = 'Account' AND NOT keyword_excluded
+  GROUP BY content_phone
+  HAVING COUNT(DISTINCT jobnumber) >= 3
+),
+
+filtered AS (
+  SELECT * FROM guarded
+  WHERE NOT keyword_excluded
+    AND content_phone NOT IN (SELECT content_phone FROM desc_freq)
+),
+
+-- Single-candidate constraint: per opp, count distinct candidate jobs.
+-- Only link when exactly 1 job matches.
+candidate_counts AS (
+  SELECT opportunity_id, COUNT(DISTINCT jobnumber) AS job_candidates
+  FROM filtered
+  GROUP BY opportunity_id
+),
+
+single_candidates AS (
+  SELECT f.*,
+    ROW_NUMBER() OVER (PARTITION BY f.opportunity_id ORDER BY ABS(f.days_diff), f.jobnumber) AS rn
+  FROM filtered f
+  JOIN candidate_counts cc ON f.opportunity_id = cc.opportunity_id
+  WHERE cc.job_candidates = 1
+)
+
+SELECT opportunity_id, content_phone, jobnumber, job_task_type, job_status,
+  client_name, customer_type, days_diff
+FROM single_candidates
+WHERE rn = 1;
+
+-- Apply T3 lead-side links: Account → account_linked, COD → job_matched
+UPDATE `pttr-taskdata.ds_crm.opportunities` o
+SET
+  o.jobnumber        = m.jobnumber,
+  o.job_task_type    = m.job_task_type,
+  o.job_status       = m.job_status,
+  o.job_count        = 1,
+  o.all_jobnumbers   = m.jobnumber,
+  o.opp_type         = CASE WHEN m.customer_type = 'Account' THEN 'account_linked'
+                             ELSE 'job_matched' END
+FROM content_phone_matches m
+WHERE o.opportunity_id = m.opportunity_id;
+
+-- For Account-type content-phone matches: insert into crm_account_exclusions
+INSERT INTO `pttr-taskdata.ds_crm.crm_account_exclusions`
+  (opportunity_id, is_account, provenance, synced_at,
+   jobnumber, matched_phone, account_client, match_tier, invoiced_ex, days_lead_to_job)
+SELECT
+  m.opportunity_id, TRUE, 'auto:t3_lead_content_phone', CURRENT_TIMESTAMP(),
+  m.jobnumber, m.content_phone, m.client_name, 'auto:t3_lead_content_phone',
+  COALESCE(inv.invoiced_total_ex, 0), m.days_diff
+FROM content_phone_matches m
+LEFT JOIN `pttr-taskdata.ds_aroflo.vw_job_invoiced` inv ON m.jobnumber = inv.jobnumber
+WHERE m.customer_type = 'Account'
+  AND m.opportunity_id NOT IN (
+    SELECT opportunity_id FROM `pttr-taskdata.ds_crm.crm_account_exclusions`
+  );
+
 -- ====== §6 post-link: Refresh crm_account_exclusions.opportunity_id ======
 -- After rebuild, G- IDs have changed. Refresh using stable keys so the
 -- dashboard anti-join (queries.ts:653) continues working.
 
--- Linked rows: match via (matched_phone, jobnumber) → account_linked opp
+-- Linked rows: generic refresh for ALL tiers (§5.1 + SMS-JN + T3 content-phone)
+-- Joins on stable keys (matched_phone + jobnumber) → rebuilt opportunity_id
 UPDATE `pttr-taskdata.ds_crm.crm_account_exclusions` excl
-SET excl.opportunity_id = m.opportunity_id,
+SET excl.opportunity_id = o.opportunity_id,
     excl.synced_at = CURRENT_TIMESTAMP()
-FROM account_link_matches m
-WHERE excl.matched_phone = m.matched_phone
-  AND excl.jobnumber = m.jobnumber;
+FROM `pttr-taskdata.ds_crm.opportunities` o
+WHERE excl.matched_phone = o.phone
+  AND excl.jobnumber IS NOT NULL
+  AND o.opp_type = 'account_linked'
+  AND o.jobnumber = excl.jobnumber;
 
 -- Flag-only rows (no jobnumber): match via matched_phone → most recent gap_based opp.
 -- For multi-opp phones, pick the latest opp (most likely to appear in dashboard).
