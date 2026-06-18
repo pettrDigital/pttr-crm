@@ -87,6 +87,20 @@ export const NQ_NB_ALLOWED = [
   'Other',
 ] as const
 
+// CU/NFUR deterministic pre-pass: when NO logged outbound (Outbound Call /
+// Outbound Email) exists in the timeline, CU is structurally impossible —
+// you can't call a customer "unresponsive" if you never visibly contacted them.
+// Remove CU from the allowed set and force NFUR as the disposition default.
+// OHQ/answering-service pager handoffs do NOT count as logged outbound (per
+// cd144fb) — the tech-mobile follow-up channel is untracked.
+//
+// Detection: query lead_timeline for interaction_type IN ('Outbound Call',
+// 'Outbound Email'). 0-duration/unanswered outbound calls STILL count
+// (visible attempt = CU-eligible). Only complete absence = force NFUR.
+export const NQ_NB_ALLOWED_NO_OUTBOUND = NQ_NB_ALLOWED.filter(
+  s => s !== 'Customer Unresponsive'
+) as unknown as readonly string[]
+
 // ─── SYSTEM PROMPTS ─────────────────────────────────────────────────────
 
 export const BOOKED_SYSTEM_PROMPT = `You classify the WITHIN-BOOKED outcome of a trade services lead (plumbing/electrical, Sydney AU). The stage IS Booked — a job was created. Your task is to pick the correct sub-status. Return valid JSON only.
@@ -376,6 +390,8 @@ export function resolveGate(gate_stage: string): {
   if (gate_stage === 'judgement:NQ/NB') {
     return {
       determined: null,
+      // CU/NFUR pre-pass: caller passes has_logged_outbound; if FALSE,
+      // use NQ_NB_ALLOWED_NO_OUTBOUND (CU removed). Default to full set.
       allowedSet: NQ_NB_ALLOWED,
       systemPrompt: NQ_NB_SYSTEM_PROMPT,
     }
@@ -396,6 +412,21 @@ export function resolveGate(gate_stage: string): {
     allowedSet: null,
     systemPrompt: null,
   }
+}
+
+/**
+ * Resolve the NQ/NB allowed set based on the CU/NFUR pre-pass.
+ * Call BEFORE T7 runs. The has_logged_outbound fact determines whether
+ * Customer Unresponsive is structurally available.
+ *
+ * @param has_logged_outbound - TRUE if lead_timeline has ≥1 row with
+ *   interaction_type IN ('Outbound Call', 'Outbound Email').
+ *   OHQ/Answering Service does NOT count. 0-duration outbound calls DO count.
+ */
+export function resolveNqNbAllowedSet(
+  has_logged_outbound: boolean
+): readonly string[] {
+  return has_logged_outbound ? NQ_NB_ALLOWED : NQ_NB_ALLOWED_NO_OUTBOUND
 }
 
 /**

@@ -54,7 +54,7 @@ export interface ClassifierInput {
  */
 export async function assembleTouchesFromTimeline(
   queryFn: QueryFn, opportunityId: string, opts?: { dataset?: string }
-): Promise<{ touches: EnrichedTouch[]; job_description: string | null; labour_notes: string | null; task_notes: string | null; gate_stage: string | null }> {
+): Promise<{ touches: EnrichedTouch[]; job_description: string | null; labour_notes: string | null; task_notes: string | null; gate_stage: string | null; has_logged_outbound: boolean }> {
   const ds = opts?.dataset || DEFAULT_DS
 
   // Single query: all touches + job content + gate from lead_timeline
@@ -83,13 +83,20 @@ export async function assembleTouchesFromTimeline(
     ORDER BY interaction_datetime ASC
   `, { opportunityId })
 
-  if (rows.length === 0) return { touches: [], job_description: null, labour_notes: null, task_notes: null, gate_stage: null }
+  if (rows.length === 0) return { touches: [], job_description: null, labour_notes: null, task_notes: null, gate_stage: null, has_logged_outbound: false }
 
   // Job content + gate are per-opp (same on every row) — take from first row
   const job_description = rows[0].task_description
   const labour_notes = rows[0].labour_notes
   const task_notes = rows[0].task_notes
   const gate_stage = rows[0].gate_stage
+
+  // CU/NFUR deterministic pre-pass: does this lead have ANY logged outbound?
+  // Outbound Call / Outbound Email = visible PETTR→customer attempt.
+  // OHQ/Answering Service does NOT count (untracked tech-mobile channel).
+  const has_logged_outbound = rows.some(r =>
+    r.interaction_type === 'Outbound Call' || r.interaction_type === 'Outbound Email'
+  )
 
   // Map touches: use materialised full_content, infer content_source from touch_source
   const touches: EnrichedTouch[] = rows.map(r => ({
@@ -136,7 +143,7 @@ export async function assembleTouchesFromTimeline(
     }
   }
 
-  return { touches, job_description, labour_notes, task_notes, gate_stage }
+  return { touches, job_description, labour_notes, task_notes, gate_stage, has_logged_outbound }
 }
 
 function inferContentSource(touchSource: string | null, bodySource: string | null): string | null {
@@ -351,6 +358,7 @@ export async function buildClassifierInputFromTimeline(
       task_notes: timeline.task_notes,
     },
     gate_stage: timeline.gate_stage,
+    has_logged_outbound: timeline.has_logged_outbound,
   }
 }
 
