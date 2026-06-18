@@ -446,4 +446,5 @@ LEFT JOIN (
   AND ohq.ohq_name IS NOT NULL
 -- §6: Account flags
 LEFT JOIN `pttr-taskdata.ds_crm.crm_account_exclusions` acct_excl
-  ON o.opportunity_id = acct_excl.opportunity_id;
+  ON o.opportunity_id = acct_excl.opportunity_id
+  AND NOT (acct_excl.match_tier = 'auto:t7_match' AND COALESCE(acct_excl.needs_audit, FALSE) = TRUE);

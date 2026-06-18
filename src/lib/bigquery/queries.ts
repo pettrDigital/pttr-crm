@@ -652,6 +652,7 @@ export async function getDashboardStats() {
     FROM \`${DS}.vw_lead_enriched\` le
     LEFT JOIN \`${DS}.crm_account_exclusions\` excl
       ON le.opportunity_id = excl.opportunity_id
+      AND NOT (excl.match_tier = 'auto:t7_match' AND COALESCE(excl.needs_audit, FALSE) = TRUE)
     WHERE DATE(le.created_at_sydney) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
       AND excl.opportunity_id IS NULL
   `)
