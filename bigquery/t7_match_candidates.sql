@@ -170,7 +170,10 @@ FROM (
   WHERE lt.full_content IS NOT NULL
     AND REGEXP_CONTAINS(lt.full_content, r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 )
-WHERE email IS NOT NULL AND email != '';
+WHERE email IS NOT NULL AND email != ''
+  -- Exclude company/staff/system domains — these fire false EMAIL_MATCH
+  -- when the same company address appears in both lead content and job descriptions
+  AND NOT REGEXP_CONTAINS(email, r'@(mrwasher\.com\.au|electriciantotherescue\.com\.au|plumbertotherescue\.com\.au|inboundemail\.aroflo\.com|notifications\.aroflo\.com|replies\.aroflo\.com|aroflo\.com|resend\.quinnmarketing\.com\.au|tawk\.email|blockeddrainstotherescue\.com\.au)');
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- STEP 4: Candidate jobs — hybrid buckets
@@ -326,10 +329,51 @@ JOIN (
   FROM `pttr-taskdata.ds_aroflo.tasks_deduped` td
   WHERE REGEXP_CONTAINS(td.description, r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 ) job_emails ON c.jobnumber = job_emails.jobnumber
-WHERE email IS NOT NULL AND email != '';
+WHERE email IS NOT NULL AND email != ''
+  -- Same company/staff/system domain exclusion as lead emails
+  AND NOT REGEXP_CONTAINS(email, r'@(mrwasher\.com\.au|electriciantotherescue\.com\.au|plumbertotherescue\.com\.au|inboundemail\.aroflo\.com|notifications\.aroflo\.com|replies\.aroflo\.com|aroflo\.com|resend\.quinnmarketing\.com\.au|tawk\.email|blockeddrainstotherescue\.com\.au)');
 
 -- ═══════════════════════════════════════════════════════════════════════
--- STEP 7: Final output — candidates with pre-computed PHONE_MATCH / EMAIL_MATCH
+-- STEP 7: Lead names — extract from contact_name + transcript patterns
+-- for pre-computed NAME_MATCH (closes fuzzy-name gap, e.g. Denham/Denholm)
+-- ═══════════════════════════════════════════════════════════════════════
+CREATE TEMP TABLE t7m_lead_names AS
+-- From enriched contact_name (split into first/last)
+SELECT DISTINCT el.opportunity_id,
+  LOWER(TRIM(SPLIT(le.contact_name, ' ')[SAFE_OFFSET(0)])) AS first_name,
+  LOWER(TRIM(COALESCE(
+    SPLIT(le.contact_name, ' ')[SAFE_OFFSET(1)],
+    SPLIT(le.contact_name, ' ')[SAFE_OFFSET(0)]))) AS last_name
+FROM t7m_eligible_leads el
+JOIN `pttr-taskdata.ds_crm.vw_lead_enriched` le ON el.opportunity_id = le.opportunity_id
+WHERE le.contact_name IS NOT NULL AND LENGTH(TRIM(le.contact_name)) > 2
+  AND le.contact_name NOT IN ('AUSTRALIA', 'Unknown')
+UNION DISTINCT
+-- From transcript: multiple name patterns including "her/his name" and "Name:" fields
+SELECT DISTINCT el.opportunity_id,
+  LOWER(SPLIT(name, ' ')[SAFE_OFFSET(0)]) AS first_name,
+  LOWER(COALESCE(SPLIT(name, ' ')[SAFE_OFFSET(1)], SPLIT(name, ' ')[SAFE_OFFSET(0)])) AS last_name
+FROM t7m_eligible_leads el
+JOIN `pttr-taskdata.ds_crm.lead_timeline` lt ON el.opportunity_id = lt.opportunity_id,
+UNNEST([
+  REGEXP_EXTRACT(lt.full_content, r'(?i)(?:my name is|my name.s)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'),
+  REGEXP_EXTRACT(lt.full_content, r'(?i)(?:her name.s|his name.s|her name is|his name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'),
+  REGEXP_EXTRACT(lt.full_content, r'(?i)(?:this is|I.m|I am)\s+([A-Z][a-z]+ [A-Z][a-z]+)'),
+  REGEXP_EXTRACT(lt.full_content, r'(?m)^Name:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'),
+  REGEXP_EXTRACT(lt.full_content, r'(?i)Customer Name:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'),
+  -- "calling from [Business]" for business names
+  REGEXP_EXTRACT(lt.full_content, r'(?i)(?:calling from|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[.,]')
+]) AS name
+WHERE lt.full_content IS NOT NULL AND name IS NOT NULL
+  AND LENGTH(name) > 2
+  AND LOWER(name) NOT IN ('not sure', 'the owner', 'the house', 'an electrician',
+    'electrician to', 'plumber to', 'going to', 'just in', 'in the', 'in an',
+    'for the', 'not too', 'a plumber', 'a electrician', 'an electrical',
+    'business software', 'in an apartment');
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- STEP 8: Final output — candidates with pre-computed signals
+-- PHONE_MATCH, EMAIL_MATCH, NAME_MATCH (first-name from any source)
 -- ═══════════════════════════════════════════════════════════════════════
 SELECT
   c.opportunity_id,
@@ -358,6 +402,55 @@ SELECT
     JOIN t7m_candidate_emails ce ON le.email = ce.email
     WHERE le.opportunity_id = c.opportunity_id AND ce.jobnumber = c.jobnumber
       AND ce.opportunity_id = c.opportunity_id
-  ) AS email_match
+  ) AS email_match,
+  -- PRE-COMPUTED: does the lead's first name match candidate's first name?
+  -- Catches fuzzy-surname cases (Denham/Denholm) where first name is the anchor.
+  EXISTS(
+    SELECT 1 FROM t7m_lead_names ln
+    WHERE ln.opportunity_id = c.opportunity_id
+      AND ln.first_name IS NOT NULL AND LENGTH(ln.first_name) >= 3
+      AND (
+        -- Exact first-name substring match
+        REGEXP_CONTAINS(LOWER(c.client_name), ln.first_name)
+        OR REGEXP_CONTAINS(LOWER(SUBSTR(c.job_description, 1, 200)), CONCAT(r'\b', ln.first_name, r'\b'))
+        -- SOUNDEX fallback: catches Claire/Clare, Jon/John, etc.
+        OR SOUNDEX(ln.first_name) = SOUNDEX(
+          LOWER(COALESCE(
+            REGEXP_EXTRACT(c.client_name, r',\s*(\S+)'),   -- "Last, First" format
+            SPLIT(c.client_name, ' ')[SAFE_OFFSET(0)]       -- "First Last" format
+          )))
+      )
+  ) AS name_match,
+  -- PRE-COMPUTED: candidate's client_name (or a distinctive part) appears in lead content.
+  -- Catches business names (Oporto), full names where first-name extraction failed
+  -- (Helen Owens, Clare/Claire Elias), and any other identity overlap.
+  EXISTS(
+    SELECT 1 FROM `pttr-taskdata.ds_crm.lead_timeline` lt
+    WHERE lt.opportunity_id = c.opportunity_id
+      AND lt.full_content IS NOT NULL AND LENGTH(lt.full_content) > 10
+      AND LENGTH(REGEXP_REPLACE(TRIM(c.client_name), r'[^a-zA-Z ]', '')) >= 4
+      -- Exclude strata/property management company names (they appear in many leads)
+      AND c.client_name NOT IN ('Bright & Duggan Pty Ltd', 'Premium Strata Pty Ltd',
+        'Strata Plus Pty Ltd', 'Jamesons Strata Management', 'Whelan Property Group',
+        'Result Property Group', 'Strata Choice', 'Strata Embassy', 'MISC COD',
+        'Mr Washer', 'Plumber & Electrician To The Rescue', 'Strata United',
+        'StrataBee', 'Executive Strata', 'Neighbourly Strata(Len Robinson Strata Mgmnt)',
+        'Strategia Strata Management', 'Clisdells Strata Management',
+        'C/- Strata Partners', 'More Than Strata', 'Strata Republic Pty Ltd',
+        'CGS Facilities Management (Clean Green Strata)', 'Strata Edge',
+        'MacKillop Family Services', 'Birch & Waite Foods P/L',
+        'Platinum Properties (NSW)', 'Cutty Ayres Real Estate',
+        'Gordon Robinson Real Estate', 'APEX Property Investments')
+      AND REGEXP_CONTAINS(LOWER(lt.full_content),
+        -- Normalize multiple spaces in client name to single space, then match
+        LOWER(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(c.client_name), r'[^a-zA-Z ]', ''), r'\s+', ' ')))
+  ) AS content_match,
+  -- PRE-COMPUTED: lead suburb matches candidate job suburb
+  (el.lead_suburb IS NOT NULL AND el.lead_suburb != ''
+    AND c.job_suburb IS NOT NULL AND c.job_suburb != ''
+    AND LOWER(TRIM(el.lead_suburb)) = LOWER(TRIM(c.job_suburb))
+    AND LOWER(TRIM(el.lead_suburb)) NOT IN ('sydney', 'nsw')  -- too generic
+  ) AS suburb_match
 FROM t7m_candidates c
+JOIN t7m_eligible_leads el ON c.opportunity_id = el.opportunity_id
 ORDER BY c.opportunity_id, c.trade_bucket, c.rn;
