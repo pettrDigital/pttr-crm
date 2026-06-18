@@ -27,14 +27,51 @@ conflated_phones AS (
     GROUP BY gp.phone
   ) WHERE desc_count >= 10
 ),
--- Leads with substantive content
-leads_with_content AS (
+-- Leads with matchable signal: content with problem keywords, OR identity
+-- signals (name/phone/email/suburb) from enriched view. Replaces the prior
+-- LENGTH(full_content) > 50 filter which wrongly excluded identity-rich
+-- short leads (phone+email bundles) while passing signal-free greeting text.
+leads_with_signal AS (
+  -- Has problem-keyword content (greeting-stripped)
   SELECT DISTINCT lt.opportunity_id
   FROM `pttr-taskdata.ds_crm.lead_timeline` lt
-  WHERE lt.full_content IS NOT NULL AND LENGTH(lt.full_content) > 50
-    AND lt.gate_stage = 'judgement:NQ/NB'
+  WHERE lt.gate_stage = 'judgement:NQ/NB'
+    AND lt.full_content IS NOT NULL
+    AND LENGTH(lt.full_content) > 10
+    AND REGEXP_CONTAINS(
+      REGEXP_REPLACE(
+        REGEXP_REPLACE(
+          REGEXP_REPLACE(LOWER(lt.full_content),
+            r'(thank you for (calling|contacting|choosing)[^.]*\.?\s*)', ''),
+          r'(welcome to\s+(plumb|electri)[^.]*\.?\s*)', ''),
+        r'((you.ve (called|reached|contacted)\s+(plumb|electri))[^.]*\.?\s*)', ''),
+      r'(plumb|electri|tap|drain|toilet|leak|water|pipe|sewer|blocked|power|switch|light|circuit|breaker|fuse|fan|smoke|shower|bath|sink|hot|repair|fix|install|replace|broken|fault|damage|flood|drip)')
+  UNION DISTINCT
+  -- Has identity signal (phone/name/email/suburb) — catches leads with
+  -- no content but real identity signals
+  SELECT DISTINCT o.opportunity_id
+  FROM `pttr-taskdata.ds_crm.opportunities` o
+  WHERE o.phone IS NOT NULL
+  UNION DISTINCT
+  SELECT DISTINCT le.opportunity_id
+  FROM `pttr-taskdata.ds_crm.vw_lead_enriched` le
+  WHERE le.contact_name IS NOT NULL AND le.contact_name != ''
+  UNION DISTINCT
+  SELECT DISTINCT le.opportunity_id
+  FROM `pttr-taskdata.ds_crm.vw_lead_enriched` le
+  WHERE le.email IS NOT NULL AND le.email != ''
+  UNION DISTINCT
+  SELECT DISTINCT le.opportunity_id
+  FROM `pttr-taskdata.ds_crm.vw_lead_enriched` le
+  WHERE le.suburb IS NOT NULL AND le.suburb != ''
+),
+-- Gate filter: must have NQ/NB gate stage
+has_nqnb_gate AS (
+  SELECT DISTINCT lt.opportunity_id
+  FROM `pttr-taskdata.ds_crm.lead_timeline` lt
+  WHERE lt.gate_stage = 'judgement:NQ/NB'
 )
-SELECT
+SELECT DISTINCT  -- DISTINCT: guards against vw_lead_enriched fanout (4 opps have dupes)
   o.opportunity_id,
   o.phone AS lead_phone,
   DATE(o.opportunity_timestamp) AS lead_date,
@@ -43,7 +80,8 @@ SELECT
   le.suburb AS lead_suburb
 FROM `pttr-taskdata.ds_crm.opportunities` o
 JOIN `pttr-taskdata.ds_crm.vw_lead_enriched` le ON o.opportunity_id = le.opportunity_id
-JOIN leads_with_content lwc ON o.opportunity_id = lwc.opportunity_id
+JOIN has_nqnb_gate g ON o.opportunity_id = g.opportunity_id
+JOIN leads_with_signal lws ON o.opportunity_id = lws.opportunity_id
 WHERE o.opp_type = 'gap_based'
   AND o.jobnumber IS NULL
   AND o.wc_lead_id IS NOT NULL  -- WC leads only per §5.3 scope
