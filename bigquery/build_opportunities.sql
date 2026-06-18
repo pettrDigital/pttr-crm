@@ -734,7 +734,7 @@ desc_hits AS (
     ON REPLACE(REPLACE(td.description, ' ', ''), '&nbsp;', '')
        LIKE CONCAT('%', SUBSTR(lp.content_phone, 4), '%')
   JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
-  WHERE ABS(DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY)) <= 30
+  WHERE DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY) BETWEEN 0 AND 30
     AND lp.content_phone NOT IN (SELECT phone FROM shared_line_phones)
 ),
 
@@ -750,7 +750,7 @@ note_hits AS (
     ON REPLACE(tn.note_clean, ' ', '')
        LIKE CONCAT('%', SUBSTR(lp.content_phone, 4), '%')
   JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON tn.jobnumber = tc.jobnumber
-  WHERE ABS(DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY)) <= 30
+  WHERE DATE_DIFF(tc.requested_date_parsed, lp.lead_date, DAY) BETWEEN 0 AND 30
     AND lp.content_phone NOT IN (SELECT phone FROM shared_line_phones)
 ),
 
@@ -982,7 +982,7 @@ matched AS (
     DATE_DIFF(inc.job_date, uo.opp_date, DAY) AS days_diff
   FROM unlinked_opps uo
   JOIN included inc ON uo.phone = inc.job_phone
-  WHERE ABS(DATE_DIFF(inc.job_date, uo.opp_date, DAY)) <= 30
+  WHERE DATE_DIFF(inc.job_date, uo.opp_date, DAY) BETWEEN 0 AND 30
 ),
 
 -- Single-candidate constraint: only link when exactly 1 job matches per opp
