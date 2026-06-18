@@ -21,22 +21,22 @@ SELECT * FROM UNNEST(ARRAY<STRUCT<
   wc_lead_id INT64, jobnumber STRING, confidence FLOAT64,
   evidence STRING, corroboration STRING, abstain BOOL
 >>[
-  -- ──── VALIDATION BATCH (13 leads) ────
-  -- Matches (10)
-  (210835017, '140878', 0.90, 'Name (Peter Denham=Denholm) + problem (leaking shower taps)', 'name+problem', FALSE),
-  (214123961, '141030', 0.85, 'Name (Janet Howse=Howse Janet reversed) + problem (water heater+toilets)', 'name+problem', FALSE),
-  (214127245, '141035', 0.95, 'Exact name (Filiz Archer) + verbatim problem (kitchen sink leak+washers)', 'name+verbatim_problem', FALSE),
-  (215756822, '141193', 0.95, 'Exact name (Chris Kelsey) + verbatim problem (exhaust fan in bathroom)', 'name+verbatim_problem', FALSE),
+  -- ──── FULL RUN (560 leads, 13 matches) — 2026-06-18 ────
+  -- Fixed: email contamination removed, name/content/suburb signals added, SOUNDEX for spelling variants
+  -- Matches (13)
+  (208123762, '140652', 0.90, 'Name Ann + verbatim problem (leaking hose tap + blocked bathroom sink)', 'name+verbatim_problem', FALSE),
+  (210835017, '140878', 0.92, 'Near-exact name (Peter Denham/Denholm) + Christmas 2025 offer corroboration', 'name+problem', FALSE),
+  (214123961, '141030', 0.95, 'Exact reversed name (Janet Howse=Howse Janet) + problem (water heater+toilets)', 'name+problem', FALSE),
+  (214127245, '141035', 0.97, 'Exact name (Filiz Archer) + phone + verbatim problem (kitchen sink+washers)', 'name+phone+verbatim_problem', FALSE),
+  (215597161, '141183', 0.95, 'Phone match (Mary Laktaridis +61499540288) + name (Mary) + problem (blocked drain+exhaust fan)', 'phone+name+problem', FALSE),
+  (215756822, '141193', 0.95, 'Exact name (Chris Kelsey=Kelsey Christopher) + verbatim problem (exhaust fan bathroom)', 'name+verbatim_problem', FALSE),
+  (219035874, '141470', 0.93, 'Exact reversed name (Loretta Fong=Fong Loretta) + problem (power point) + service agreement', 'name+problem', FALSE),
   (221688028, '141556', 0.85, 'Business name (Oporto) + suburb (Erskineville) + problem (power/POS tripped)', 'name+suburb+problem', FALSE),
   (223847706, '141721', 0.85, 'Name (Helen) + problem (power board/powerpoints) + context (neighbour helping)', 'name+problem', FALSE),
-  (230563333, '142192', 0.90, 'Exact name (Sophie Capelli) + problem (power point in kitchen)', 'name+problem', FALSE),
-  (232004696, '142270', 0.95, 'Phone+email match (Sarah Armstrong) + suburb (Elizabeth Bay)', 'phone+email+suburb', FALSE),
-  (236286440, '142586', 0.90, 'Verbatim fingerprint (LED lights+garden+wall+switch covers)', 'verbatim_problem+name', FALSE),
-  (238745838, '142760', 0.90, 'Name (Claire=Clare Elias) + problem (sensor light removal/replacement)', 'name+problem', FALSE),
-  -- Abstains (3)
-  (208123762, CAST(NULL AS STRING), 0.0, 'Account bar not met: Ann first-name-only, no phone/email/location', '', TRUE),
-  (216450883, CAST(NULL AS STRING), 0.0, 'No name/problem/phone signals linking Mervyn Yee to candidate jobs', '', TRUE),
-  (223945610, CAST(NULL AS STRING), 0.0, 'Problem mismatch: light switch in toilet vs PowerPoint to bedroom', '', TRUE)
+  (230563333, '142192', 0.97, 'Exact name (Sophie Capelli) + verbatim problem (power point in kitchen)', 'name+verbatim_problem', FALSE),
+  (232004696, '142270', 0.98, 'Phone+email match (Sarah Armstrong) + name (Sarah) + suburb (Elizabeth Bay)', 'phone+email+name+suburb', FALSE),
+  (236286440, '142586', 0.97, 'Verbatim fingerprint (LED lights+drivers+garden+wall+switch covers) + name (Ben)', 'verbatim_problem+name', FALSE),
+  (238745838, '142760', 0.90, 'Name (Claire=Clare Elias via SOUNDEX) + problem (sensor light removal/replacement)', 'name+problem', FALSE)
 ]);
 
 -- ═══════════════════════════════════════════════════════════════════════
