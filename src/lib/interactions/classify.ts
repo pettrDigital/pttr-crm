@@ -382,6 +382,14 @@ export async function buildClassifierInput(
  * Caps per-source content to stay within token budget.
  * Never drops the latest touch (it often holds the outcome).
  */
+/**
+ * Format classifier prompt with per-type character caps.
+ * Caps exist for paid-API token management ONLY — the CC-as-classifier
+ * (free) path should use formatClassifierPromptFull() which is uncapped.
+ * Do NOT gate the CC validation/production path through these caps:
+ * they drop deciding signals on multi-touch leads (tested: strata
+ * referral at pos 3988, "job given away" at touch 15 — both lost).
+ */
 export function formatClassifierPrompt(input: ClassifierInput, opts?: {
   transcriptCap?: number; formCap?: number; emailCap?: number; jobDescCap?: number
 }): string {
@@ -462,6 +470,73 @@ export function formatClassifierPrompt(input: ClassifierInput, opts?: {
   if (input.task_notes) {
     parts.push('\nTASK NOTES:')
     parts.push(input.task_notes.slice(0, 3000))
+  }
+
+  return parts.join('\n')
+}
+
+/**
+ * Uncapped classifier prompt for CC-as-classifier (free channel).
+ * Same structure as formatClassifierPrompt() — objective facts, chronological
+ * timeline, job content — but NO character truncation on any field.
+ *
+ * Safe for held-out validation: full_content is raw interaction text
+ * (transcripts, emails, forms). fetchFacts() returns objective BQ fields only.
+ * Neither source exposes WC after_* fields, manual/form_job_number, Firestore
+ * overrides, or any human work-product. The held-out exclusion is on the
+ * query (buildClassifierInputFromTimeline), not on the formatter.
+ */
+export function formatClassifierPromptFull(input: ClassifierInput): string {
+  const parts: string[] = []
+
+  // ─── Objective facts (same as capped version) ───
+  parts.push('OBJECTIVE FACTS:')
+  parts.push(`- Lead type: ${input.facts.lead_type}, Channel: ${input.facts.channel}, Source: ${input.facts.source}`)
+  parts.push(`- Service: ${input.facts.service}`)
+  parts.push(`- Answered: ${input.facts.answered}, Captured (>=20s): ${input.facts.captured}`)
+  parts.push(`- After hours: ${input.facts.is_after_hours}`)
+  parts.push(`- Booking status: ${input.facts.booking_status}, Completed: ${input.facts.completed}, Job count: ${input.facts.job_count}`)
+  parts.push(`- Existing customer: ${input.facts.is_existing_customer}`)
+  if (input.facts.contact_name) parts.push(`- Contact: ${input.facts.contact_name}`)
+  if (input.facts.suburb) parts.push(`- Suburb: ${input.facts.suburb}`)
+  if (input.facts.client_name) parts.push(`- Client (AroFlo): ${input.facts.client_name}`)
+  if (input.facts.client_address) parts.push(`- Client suburb: ${input.facts.client_address}`)
+  if (input.facts.job_contact_name) parts.push(`- Job contact: ${input.facts.job_contact_name}`)
+
+  // ─── Interaction timeline (chronological, all touches, UNCAPPED) ───
+  if (input.touches.length > 0) {
+    parts.push(`\nINTERACTION TIMELINE (${input.touches.length} touches, chronological):`)
+
+    for (const touch of input.touches) {
+      const ts = touch.interaction_datetime || '?'
+      const type = touch.interaction_type || 'Unknown'
+      const op = touch.interaction_operator ? ` | ${touch.interaction_operator}` : ''
+      const dur = touch.interaction_duration_seconds ? ` | ${Math.floor(touch.interaction_duration_seconds / 60)}m${touch.interaction_duration_seconds % 60}s` : ''
+      const did = touch.called_did_label ? ` | DID: ${touch.called_did_label}` : ''
+
+      const header = `[${ts}] ${type}${op}${dur}${did}`
+
+      if (touch.full_content && touch.content_source) {
+        parts.push(`\n${header}`)
+        parts.push(touch.full_content)
+      } else {
+        parts.push(`${header} (no transcript available)`)
+      }
+    }
+  }
+
+  // ─── Job-side content (UNCAPPED) ───
+  if (input.job_description) {
+    parts.push('\nJOB DESCRIPTION:')
+    parts.push(input.job_description)
+  }
+  if (input.labour_note) {
+    parts.push('\nTECH LABOUR NOTE:')
+    parts.push(input.labour_note)
+  }
+  if (input.task_notes) {
+    parts.push('\nTASK NOTES:')
+    parts.push(input.task_notes)
   }
 
   return parts.join('\n')
