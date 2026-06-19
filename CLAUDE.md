@@ -2,6 +2,12 @@
 
 # CRM Data Pipeline — Reference
 
+> **BEFORE matching, classification, or exclusion work**: read §17 (Settled
+> Decisions — Do Not Re-Derive). These rules were validated with evidence and
+> cost hours to establish. Re-deriving them wastes time and risks regression.
+> Key sections: exclusion-by-list-only (the Aaron rule), facts-in-pre-passes
+> (architectural principle), T7.2 validated config, WC reconciliation standard.
+
 ## §1 Business Context
 
 **PETTR** (Plumber To The Rescue / Electrician To The Rescue) — owner-operator:
@@ -729,3 +735,131 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 | `src/app/api/leads/[id]/classify/route.ts` | Classification GET/POST endpoint |
 | `src/app/api/jobs/[id]/value-override/route.ts` | Job value override GET/POST |
 | `HANDOVER.md` | CRM app (Next.js) technical handover |
+
+## §17 Settled Decisions — Do Not Re-Derive
+
+These decisions were validated with evidence. They are STANDING RULES.
+Do not re-derive, re-debate, or "improve" without explicit instruction.
+Each carries a rationale — read it before proposing alternatives.
+
+### §17.1 Exclusion List — BY-LIST-ONLY (the Aaron Rule)
+
+**RULE**: Exclude leads and phones ONLY by explicit, maintained lists.
+NEVER by heuristic (call frequency, outbound volume, pattern matching).
+
+**Lists** (the ONLY exclusion authorities):
+- `ds_crm.test_numbers` — 16 entries (10 staff mobiles, 4 test lines,
+  1 strata partner, 1 owner). Spine excludes at `vw_leads_unified:63`.
+- WC `is_test_lead` flag — WC's own test marker. Spine excludes at
+  `vw_leads_unified:233`.
+- Internal email domains: `@mrwasher.com.au`, `@electriciantotherescue.com.au`,
+  `@plumbertotherescue.com.au` — excluded from EMAIL_MATCH precomputation
+  in `t7_match_candidates.sql` STEP 3/6.
+- `lkp_did_trade.is_internal` — 10+ staff DIDs marked internal. Used for
+  `is_internal_did` on `lead_timeline` and the NJR pre-pass.
+- Internal phone range: 8583-xxxx extensions (CSR/staff, not customer).
+- Account-only phones: phones appearing ONLY on Account-type jobs
+  (excluded from COD spine, not from the system entirely).
+
+**WHY BY-LIST-ONLY**: The retired heuristic "≥10 outbound + 0 AroFlo jobs =
+internal" wrongly excluded Aaron Simpson, a real high-volume property manager
+who made many calls but wasn't staff. Volume ≠ internal. The heuristic was
+replaced by the explicit list after the Aaron incident. Any future exclusion
+proposal that uses frequency/volume/pattern as a proxy for "internal" must
+be rejected — add the specific phone/email to the list instead.
+
+**ADDING TO THE LIST**: manual only. Add the specific phone/email/DID to
+`test_numbers` or `lkp_did_trade` with a note and reason. The list is
+small (16 entries) and slow-growing — this is by design.
+
+### §17.2 Architectural Principle — Facts in Pre-Passes, Not AI
+
+**RULE**: If a classification decision can be checked against structured data
+(a column value, a row existence, a count), it MUST be a deterministic
+pre-pass. Do NOT ask the AI model to check facts against the timeline.
+
+**Evidence**: T7.2 ignored the committed CU/NFUR rule 50 times. The rule was
+explicit ("REQUIRES POSITIVE EVIDENCE: visible outbound"), the prompt was
+correct, the model still picked CU on leads with no outbound. Moving the
+check to a deterministic pre-pass (`has_outbound` boolean from timeline
+query) eliminated the entire 50-error category mechanically.
+
+**Current pre-passes** (all deterministic, no AI):
+- `has_outbound` → CU removed from allowed set when FALSE (commit `0b1a78e`)
+- `has_internal_touch` → NJR removed when FALSE (commit `b8d6d03`)
+- `gate_stage` → determined stages skip AI entirely (build_lead_timeline.sql)
+- `applyPaymentRegex` → payment/not-proceeding patterns on Booked:$0 leads
+
+**The test**: "Could a SQL query answer this?" If yes → pre-pass, not prompt.
+The model is good at reading conversational intent (why didn't they book?).
+The model is bad at checking structured properties (does outbound exist?
+how many touches? is the DID internal?).
+
+### §17.3 T7.2 Validated Configuration (locked 2026-06-18)
+
+- **Prompt**: flat decision rules (NOT layered — 3-layer restructuring
+  regressed SNP 61%→28%, reverted). Committed `4fa36bc`.
+- **Definition fixes**: Spam includes apprentice/employment seekers.
+  NJR = internal staff ONLY.
+- **Pre-passes**: CU/NFUR (`has_outbound`), NJR (`has_internal_touch`),
+  payment regex (Booked:$0).
+- **Content**: full uncapped (`formatClassifierPromptFull`). Capped version
+  (`formatClassifierPrompt`) is API-only — drops deciding signals on 2 of 4
+  tested hard cases.
+- **Confidence routing**: ≥0.70 auto-classify (95.2% accuracy on 84.5% of
+  leads), <0.70 human review (15.5% of leads).
+- **Measured**: 89.1% on 367 GT. See `t7_taxonomy_spec.md §10`.
+
+**Failed experiment** (do not repeat): 3-layer prompt restructuring (c803de9)
+lowered overall accuracy and gutted SNP by making CU/NFUR a "residual" that
+uncertain leads dumped into. The pre-pass approach is architecturally superior.
+
+### §17.4 T7.1→T7.2 Wiring (deployed 2026-06-19)
+
+- **Deployed**: orchestrator rev 00031/00032 (`deploy.sh` run, artifacts
+  verified). `build_opportunities.sql` + `build_lead_timeline.sql` both
+  contain the propagation code.
+- **Account JN propagation**: `auto:t7_match` added to §6 tier filter.
+- **COD JN propagation**: post-graph UPDATE keyed on `wc_lead_id + jobnumber`
+  (stable — `matched_phone` is NULL for 8 of 10 COD matches).
+- **Idempotency**: proven across 2 consecutive orchestrator rebuilds.
+  13 matches survived both. Same JNs, same gate_stages, no dupes.
+- **Run order**: build_opportunities (with propagation) → build_lead_timeline
+  (gate reads JN) → lead_gate. Sequential, `job.result()` blocks between.
+- **Metric guard**: `getDashboardStats` reports `bookings_confirmed` (excludes
+  `review_recommended`) vs `bookings_total`. Delta = T7.1 uplift, visible.
+- **DEPLOY GAP WARNING**: committed canonical SQL ≠ deployed artifact until
+  `deploy.sh` runs. A rebuild with stale artifacts silently reverts in-flight
+  work. Always deploy before relying on code committed since last deploy.
+
+### §17.5 WC Reconciliation Standard
+
+- **Population**: full CSV, zero unexplained gaps. Every lead is compared
+  or has a proven reason for exclusion (test lead, no identity, pre-period).
+- **Join**: `wc_lead_id` (exact) OR `phone E.164` (within 30d) OR `email`
+  (within 30d). NOT primary wc_lead_id only — secondary WC touches on the
+  same opportunity must match via phone/email fallback.
+- **Test exclusion**: by-list-only (§17.1). Indicators: `@mrwasher.com.au`
+  email, phone=`123`, `is_test_lead=TRUE`, `test_numbers` table, Quinn
+  marketing test submissions (`matt@quinnmarketing.com.au` + "test").
+- **Every lead**: compared-or-explained. No "~287 gap, probably outside
+  date range." Decompose to: matched, test-excluded, no-identity, spine-gap
+  (single-digit), known recording gap, pre-period. The genuine gap is an
+  exact number with per-lead evidence.
+
+### §17.6 Company Email Exclusion (T7.1 candidate gen)
+
+Exclude these domains from PHONE_MATCH/EMAIL_MATCH precomputation in
+`t7_match_candidates.sql` STEP 3 (lead emails) and STEP 6 (candidate
+emails). These fire false EMAIL_MATCH when the same company address
+appears in both lead content and job descriptions:
+
+`@mrwasher.com.au`, `@electriciantotherescue.com.au`,
+`@plumbertotherescue.com.au`, `@inboundemail.aroflo.com`,
+`@notifications.aroflo.com`, `@replies.aroflo.com`, `@aroflo.com`,
+`@resend.quinnmarketing.com.au`, `@tawk.email`,
+`@blockeddrainstotherescue.com.au`
+
+6 false EMAIL_MATCH signals were eliminated by this exclusion (commit
+`5ea5c93`). The exclusion is on BOTH sides (lead and candidate) to
+prevent the company email from matching itself.
