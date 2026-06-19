@@ -59,26 +59,35 @@ Two customer types:
 - Recordings ingestion began ~2 Apr 2026; no 8x8 transcripts before that date
 - `raw_calls`: 72K rows, Apr 2024–present. `answered` = "Answered" / "-"
 - `call_transcripts`: 3.1K rows, Apr 2026–present
-- **Recording gap (~25% of answered inbound calls have no recording)**:
-  - Root cause: calls that overflow/forward to external mobiles via ring-group
-    overflow or follow-me rules (primarily DID 751 "Mr Washer - Temp", DID 750
-    "Mr Washer Generic", and forwarding DIDs like 726) leave the 8x8 PBX.
-    Recording is per-extension — an external forward creates no internal call
-    leg, no recording trigger, and no Storage API object.
-  - Confirmed via direct 8x8 Storage API test: 0/20 diverse gap call_ids
-    (different callers, DIDs, dates, talk times up to 4m42s) returned a
-    recording. 92.7% zero-leg rate on unrecorded calls vs 1.9% on recorded.
-  - This is an **8x8 routing/config issue**, NOT a CRM ingestion bug, NOT
-    recoverable by our code. Capture ceiling is ~75% under current routing.
-    Transcription rate of recorded calls: ~93% (Whisper).
-  - **Known minor bug** (not yet fixed): recording ingest (`pettr-recordings-
-    backfill` Cloud Run Job) advances watermark on transient 8x8 500 errors
-    without retry (6 occurrences in 30 days). Low impact — 8x8 purges the
-    objects before any recovery attempt. Should add retry-before-advance.
-  - **Implication for T7/UI**: a call with no transcript is often a genuine
-    source absence (forwarded-to-mobile), not a pipeline failure. Treat as
-    a normal touch with metadata only (caller phone, DID, duration, operator
-    from CDR) — do not classify as "missing data."
+- **Recording gap vs Opportunity gap — TWO SEPARATE QUESTIONS**:
+  - **RECORDING (transcript/audio): UNRECOVERABLE for mobile-forwarded calls.**
+    ~25% of answered inbound calls have no recording. Root cause: calls that
+    overflow/forward to external mobiles leave the 8x8 PBX — no internal call
+    leg, no recording trigger, no Storage API object. Confirmed 0/20 via
+    direct 8x8 Storage API test. 92.7% zero-leg rate on unrecorded calls.
+    This is an 8x8 routing/config issue, NOT recoverable by our code.
+    Capture ceiling ~75% under current routing. The transcript is genuinely
+    gone — treat as a normal touch with metadata only (caller phone, DID,
+    duration, operator from CDR), not "missing data."
+  - **OPPORTUNITY (the lead): COVERED via connected-component clustering.**
+    Call spine events source from 8x8 CDRs, but the OPPORTUNITY is created
+    by clustering on phone — so a forwarded call with no 8x8 CDR still lands
+    in the correct opportunity IF the caller made any other trackable touch
+    (form, different call, email). Verified 2026-06-19: ALL 675 WC call leads
+    (Dec–Jun, unique, non-test) have an opportunity. 602 matched 8x8 directly;
+    73 had no/mismatched 8x8 CDR but clustered into existing opportunities
+    via their phone number. The only true orphans are callers whose SOLE
+    touch was one mobile-forwarded call with no phone captured (~3 leads).
+  - **WC-as-first-class-call-source**: would NOT change coverage (clustering
+    already handles it). Would improve TIMING (opp created from WC call
+    immediately vs waiting for clustering) and fix the ~3 phone-capture-
+    failure orphans. Minor correctness item, NOT a coverage fix. Deferred.
+  - **Known minor bug** (not yet fixed): recording ingest advances watermark
+    on transient 8x8 500 errors without retry (6 in 30d). Low impact.
+  - **Spine backlog**: WC→8x8 match window is ±5s. 23 leads (Dec–Jun CSV)
+    have a WC call and an 8x8 CDR for the same phone but the timestamps
+    differ by >5s. Widening the window recovers these (and likely more
+    across full history). Logged, not yet built.
 
 ### WhatConverts (gd_WhatConverts.all_leads_enriched / all_leads_classified)
 - Tracks calls + web forms via tracking numbers and form integrations
