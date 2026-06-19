@@ -168,8 +168,12 @@ def daily_orchestrator(request):
     print(f"TaskLabours: {r5.json()}")
 
     # --- TASK NOTES ---
+    # 3-day lookback: notes bump the parent task's lastupdateddatetimeutc in ~85%
+    # of cases, but timezone boundary (UTC vs Sydney) causes ~15% to post 1 day
+    # after the parent's UTC timestamp. 3 days eliminates the edge.
+    tasknotes_date_start = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     r7 = requests.get(
-        f"{TASKNOTES_URL}?mode=daily&date_start={date_start}&max_pages=50",
+        f"{TASKNOTES_URL}?mode=daily&date_start={tasknotes_date_start}&max_pages=50",
         timeout=540
     )
     results["tasknotes"] = r7.json()
