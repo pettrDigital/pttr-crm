@@ -975,6 +975,7 @@ SELECT
   c.interaction_summary,
   c.call_id,
   c.called_did_label,
+  c.is_internal_did,
   c.body_source,
   c.body_id,
   c.full_content,
