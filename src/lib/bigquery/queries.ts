@@ -645,15 +645,37 @@ export async function getDashboardStats() {
   return query(`
     SELECT
       COUNT(*) AS total_leads,
-      COUNTIF(le.booking_status = 'Booked') AS bookings,
-      COUNTIF(le.completed = TRUE) AS conversions,
-      ROUND(SAFE_DIVIDE(COUNTIF(le.booking_status = 'Booked'), COUNT(*)) * 100, 1) AS booking_rate,
+      -- Confirmed-only: excludes review_recommended (T7.1 AI-matched, unaudited)
+      COUNTIF(le.booking_status = 'Booked'
+        AND NOT COALESCE(t7_acct.review_recommended, FALSE)
+        AND NOT COALESCE(t7_cod.review_recommended, FALSE)) AS bookings_confirmed,
+      -- Total including review_recommended (T7.1 matches flowing live but flagged)
+      COUNTIF(le.booking_status = 'Booked') AS bookings_total,
+      COUNTIF(le.completed = TRUE
+        AND NOT COALESCE(t7_acct.review_recommended, FALSE)
+        AND NOT COALESCE(t7_cod.review_recommended, FALSE)) AS conversions_confirmed,
+      COUNTIF(le.completed = TRUE) AS conversions_total,
+      ROUND(SAFE_DIVIDE(
+        COUNTIF(le.booking_status = 'Booked'
+          AND NOT COALESCE(t7_acct.review_recommended, FALSE)
+          AND NOT COALESCE(t7_cod.review_recommended, FALSE)),
+        COUNT(*)) * 100, 1) AS booking_rate_confirmed,
+      ROUND(SAFE_DIVIDE(COUNTIF(le.booking_status = 'Booked'), COUNT(*)) * 100, 1) AS booking_rate_total,
       SUM(CASE WHEN le.completed = TRUE THEN COALESCE(le.job_value, 0) ELSE 0 END) AS revenue
     FROM \`${DS}.vw_lead_enriched\` le
+    -- Account exclusions: anti-join removes Account-flagged opps from COD funnel
     LEFT JOIN \`${DS}.crm_account_exclusions\` excl
       ON le.opportunity_id = excl.opportunity_id
-      AND NOT (excl.match_tier = 'auto:t7_match' AND COALESCE(excl.needs_audit, FALSE) = TRUE)
+      AND excl.is_account = TRUE
+    -- T7.1 Account matches: carry review_recommended for dual-view
+    LEFT JOIN \`${DS}.crm_account_exclusions\` t7_acct
+      ON le.opportunity_id = t7_acct.opportunity_id
+      AND t7_acct.match_tier = 'auto:t7_match'
+    -- T7.1 COD matches: carry review_recommended for dual-view
+    LEFT JOIN \`${DS}.crm_t7_match_queue\` t7_cod
+      ON le.opportunity_id = t7_cod.opportunity_id
+      AND t7_cod.match_tier = 'auto:t7_match'
     WHERE DATE(le.created_at_sydney) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-      AND excl.opportunity_id IS NULL
+      AND excl.opportunity_id IS NULL  -- exclude Account-flagged from COD
   `)
 }
