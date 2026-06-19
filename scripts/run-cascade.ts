@@ -263,17 +263,96 @@ async function step6_writeMatches(): Promise<void> {
     if (matches.length > 0) {
       console.log(`  ${matches.length} matches to write`)
 
-      // Build the write SQL from verdicts
-      const sqlPath = path.join(__dirname, '..', 'bigquery', 't7_match_write.sql')
-      // The write SQL has hardcoded verdicts — we need to inject these dynamically
-      // For now, output the MERGE statements
       for (const m of matches) {
         console.log(`  MATCH: wc_lead_id=${m.wc_lead_id} → JN ${m.jobnumber} (conf ${m.confidence})`)
+
+        // Resolve: is this an Account or COD job?
+        const [job] = await runQuery<{ customer_type: string; client_name: string; invoiced: number }>(`
+          SELECT tc.customer_type, tc.client_name,
+            COALESCE(inv.invoiced_total_ex, 0) AS invoiced
+          FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+          LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` inv ON tc.jobnumber = inv.jobnumber
+          WHERE tc.jobnumber = '${m.jobnumber}'
+        `)
+
+        if (!job) {
+          console.log(`    WARNING: JN ${m.jobnumber} not found in AroFlo — skipping`)
+          continue
+        }
+
+        // Get the opportunity for this lead
+        const [opp] = await runQuery<{ opportunity_id: string; phone: string | null; days: number }>(`
+          SELECT o.opportunity_id, o.phone,
+            DATE_DIFF(tc.requested_date_parsed, DATE(o.opportunity_timestamp), DAY) AS days
+          FROM \`${DS}.opportunities\` o
+          JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc ON tc.jobnumber = '${m.jobnumber}'
+          WHERE o.wc_lead_id = ${m.wc_lead_id}
+        `)
+
+        if (!opp) {
+          console.log(`    WARNING: no opportunity for wc_lead_id ${m.wc_lead_id} — skipping`)
+          continue
+        }
+
+        if (job.customer_type === 'Account') {
+          // Account match → crm_account_exclusions
+          await runScript(`
+            MERGE \`${DS}.crm_account_exclusions\` T
+            USING (SELECT '${opp.opportunity_id}' AS opportunity_id,
+              '${opp.phone || ''}' AS matched_phone,
+              '${m.jobnumber}' AS jobnumber) S
+            ON COALESCE(T.matched_phone, '') = COALESCE(S.matched_phone, '')
+              AND T.jobnumber = S.jobnumber
+            WHEN NOT MATCHED THEN INSERT (
+              opportunity_id, is_account, provenance, synced_at, jobnumber,
+              matched_phone, account_client, match_tier, invoiced_ex,
+              days_lead_to_job, needs_audit, review_recommended, t7_confidence, t7_evidence
+            ) VALUES (
+              S.opportunity_id, TRUE, 'auto:t7_match', CURRENT_TIMESTAMP(), S.jobnumber,
+              NULLIF(S.matched_phone, ''), '${job.client_name.replace(/'/g, "\\'")}', 'auto:t7_match',
+              ${job.invoiced}, ${opp.days}, TRUE, TRUE, ${m.confidence},
+              '${(m.evidence || '').replace(/'/g, "\\'")}'
+            )
+            WHEN MATCHED THEN UPDATE SET
+              opportunity_id = S.opportunity_id,
+              t7_confidence = ${m.confidence},
+              t7_evidence = '${(m.evidence || '').replace(/'/g, "\\'")}',
+              review_recommended = TRUE,
+              synced_at = CURRENT_TIMESTAMP()
+          `)
+          console.log(`    → crm_account_exclusions (Account, ${job.client_name})`)
+        } else {
+          // COD match → crm_t7_match_queue
+          await runScript(`
+            MERGE \`${DS}.crm_t7_match_queue\` T
+            USING (SELECT ${m.wc_lead_id} AS wc_lead_id,
+              '${m.jobnumber}' AS jobnumber) S
+            ON T.wc_lead_id = S.wc_lead_id AND T.jobnumber = S.jobnumber
+            WHEN NOT MATCHED THEN INSERT (
+              opportunity_id, jobnumber, matched_phone, customer_type, client_name,
+              match_tier, t7_confidence, t7_evidence, t7_corroboration,
+              needs_audit, review_recommended, invoiced_ex, days_lead_to_job,
+              wc_lead_id, created_at
+            ) VALUES (
+              '${opp.opportunity_id}', S.jobnumber, ${opp.phone ? `'${opp.phone}'` : 'NULL'},
+              '${job.customer_type}', '${job.client_name.replace(/'/g, "\\'")}',
+              'auto:t7_match', ${m.confidence},
+              '${(m.evidence || '').replace(/'/g, "\\'")}',
+              '${(m.corroboration || '').replace(/'/g, "\\'")}',
+              TRUE, TRUE, ${job.invoiced}, ${opp.days},
+              S.wc_lead_id, CURRENT_TIMESTAMP()
+            )
+            WHEN MATCHED THEN UPDATE SET
+              opportunity_id = '${opp.opportunity_id}',
+              t7_confidence = ${m.confidence},
+              t7_evidence = '${(m.evidence || '').replace(/'/g, "\\'")}',
+              review_recommended = TRUE
+          `)
+          console.log(`    → crm_t7_match_queue (COD, ${job.client_name})`)
+        }
       }
 
-      // TODO: dynamic MERGE from verdicts (currently the write SQL has embedded verdicts)
-      console.log('  NOTE: write path uses t7_match_write.sql with embedded verdicts.')
-      console.log('  Update the verdicts CTE in the SQL file, then run it.')
+      console.log(`  ${matches.length} matches written`)
     } else {
       console.log('  No matches above confidence threshold.')
     }
@@ -567,14 +646,25 @@ async function main() {
   console.log(`CASCADE RUN — scope=${scope}, start=step${startStep}, dryRun=${dryRun}`)
   console.log(`${'='.repeat(60)}\n`)
 
+  if (dryRun) {
+    // DRY RUN: read-only. No rebuilds, no writes, no materialisation.
+    // Only Step 4 (read-only pre-pass query) and Step 9 (readout from
+    // existing state). ZERO tables written or replaced.
+    console.log('DRY RUN — read-only mode. No tables will be written or replaced.\n')
+    const prePasses = await step4_prePasses(scope)
+    await step9_readout(scope)
+    console.log('\n  DRY RUN COMPLETE (read-only).\n')
+    return
+  }
+
   try {
-    // Steps 0-3: deterministic spine
+    // Steps 0-3: deterministic spine (rebuilds production tables)
     if (startStep <= 0) await step0_sync(skipSync)
     if (startStep <= 1) await step1_buildOpportunities()
     if (startStep <= 2) await step2_buildLeadTimeline()
     if (startStep <= 3) await step3_leadGate()
 
-    // Step 4: pre-passes
+    // Step 4: pre-passes (read-only queries)
     let prePasses: PrePassResult[] = []
     if (startStep <= 4) prePasses = await step4_prePasses(scope)
 
@@ -601,14 +691,14 @@ async function main() {
       return  // pause for AI
     }
 
-    // Step 8: write classifications
-    if (startStep <= 8 && !dryRun) await step8_writeClassifications()
+    // Step 8: write classifications (staging only)
+    if (startStep <= 8) await step8_writeClassifications()
 
     // Step 9: readout
     if (startStep <= 9) await step9_readout(scope)
 
     // Snapshot for reprocessing
-    if (!dryRun) await writeSnapshot()
+    await writeSnapshot()
 
     console.log('\n  CASCADE COMPLETE.\n')
 

@@ -1,7 +1,28 @@
 # End-to-End Match + Classify Function — Design Spec
 
-**Status**: DESIGN v2 — corrected per review. Do not build until confirmed.
+**Status**: BUILT v2 — implemented in scripts/run-cascade.ts.
 **Date**: 2026-06-19 (updated from v1)
+
+### Known Limitations (tech debt, recorded from code review)
+
+**SEAM JSON DIVERGENCE**: The T7.1/T7.2 seam implementation writes
+CC-mode-shaped JSON (flat candidate rows, raw fields) NOT the §3
+contract format (structured `{ lead, candidates[], system_prompt }` /
+`{ formatted_prompt, allowed_set, system_prompt }`). CC reads the flat
+format and applies knowledge of the prompts/allowed-sets from the
+codebase. This works for CC-in-conversation but is NOT drop-in for a
+production engine — the JSON output must be restructured to the §3
+contract before the Cowork/production swap, or the swap won't be
+drop-in. The seam's whole purpose was engine-agnosticism; this
+undermines it until fixed.
+
+**DUAL-CLASSIFICATION VIEW: DEFERRED**. The staging table
+(`crm_auto_classifications`) exists and is architecturally isolated
+(nothing in the dashboard/API reads it). Auto-output is invisible to
+the dashboard by default — the isolation IS the interim guard. The
+dual-metric view (confirmed-only funnel vs including-auto) must be
+built BEFORE auto-classifications are ever surfaced in the dashboard.
+This is DEFERRED, not "not needed" — record it in outstanding.
 
 ## 1. Purpose
 
