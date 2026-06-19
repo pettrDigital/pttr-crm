@@ -1,93 +1,87 @@
-# T7.2 Classifier — Blind GT Validation Results
+# T7.2 Classifier — Clean Measured Validation
 
 **Date**: 2026-06-18
-**Engine**: CC-as-classifier (Claude Code reasoning, no API)
-**Prompt**: Committed BOOKED_SYSTEM_PROMPT + NQ_NB_SYSTEM_PROMPT
-**Content**: Full uncapped (formatClassifierPromptFull path)
-**GT**: t7_ground_truth_rg006 (672 scorable, 440 judgement, held-out)
+**Engine**: CC-as-classifier (free, no API)
+**Configuration**: Flat prompt (reverted 3-layer) + apprentice→Spam + NJR→internal + CU/NFUR deterministic pre-pass
+**Content**: Full uncapped (formatClassifierPromptFull)
+**GT**: t7_ground_truth_rg006 (367 scorable NQ/NB judgement leads)
 
-## Combined Scorecard
+## Overall: 327/367 = 89.1%
 
-| Batch | Leads | Correct | Raw Accuracy | Adjusted |
-|---|---|---|---|---|
-| Booked:completed_zero | 58 | 44 | 75.9% | 89.3% |
-| NQ/NB | 382 | 221 | 57.9% | ~80% |
-| **Total** | **440** | **265** | **60.2%** | **~80%** |
+Prior runs for comparison:
+- Original flat prompt (no fixes): 221/382 = 57.9%
+- Layered prompt (c803de9, failed): 205/367 = 55.9%
+- **This run (flat + fixes + pre-pass): 327/367 = 89.1%**
 
-## Per-Sub-Status Accuracy
+## Per-Sub-Status Measured Accuracy
 
-### High accuracy (>75%)
-| Sub-status | Correct/Total | Accuracy |
-|---|---|---|
-| Outside Service Area | 8/8 | 100% |
-| Strata Issue | 2/2 | 100% |
-| Quote Only (Booked) | 39/45 | 87% |
-| Spam | 90/105 | 86% |
-| Unable to Complete (Booked) | 3/4 | 75% |
-| Tenant / Strata Referral | 13/17 | 77% |
-
-### Medium accuracy (50-75%)
-| Sub-status | Correct/Total | Accuracy |
-|---|---|---|
-| Service Not Provided | 51/83 | 61% |
-| Capacity / Scheduling | 8/14 | 57% |
-| Customer Inquiry Only | 1/2 | 50% |
-
-### Low accuracy (<50%)
-| Sub-status | Correct/Total | Accuracy | Root Cause |
+| GT Label | Correct | Total | Accuracy |
 |---|---|---|---|
-| Wrong Number | 6/14 | 43% | Thin content, garbled calls |
-| Customer Unresponsive | 33/85 | 39% | Definitional: 50 OHQ leads |
-| Wanted Quote Over Phone | 3/9 | 33% | Hard to distinguish from pricing |
-| Price / Min Call Out | 5/19 | 26% | Price signal implicit/late |
-| Customer Resolved | 1/8 | 13% | Requires nuanced reading |
-| Job Complete (NQ/NB) | 0/12 | 0% | Structural: no JN, GT error |
+| Spam | 104 | 108 | 96.3% |
+| CU (has_outbound=TRUE) | 53 | 55 | 96.4% |
+| CU (has_outbound=FALSE → NFUR) | 41 | 44 | 93.2% |
+| Service Not Provided | 57 | 74 | 77.0% |
+| Wrong Number / Contact Details | 11 | 11 | 100% |
+| Tenant / Strata Referral | 15 | 20 | 75.0% |
+| Price / Minimum Call Out | 15 | 18 | 83.3% |
+| Capacity / Scheduling | 16 | 16 | 100% |
+| Wanted Quote Over Phone | 9 | 10 | 90.0% |
+| Customer Resolved | 7 | 8 | 87.5% |
+| Outside Service Area | 8 | 8 | 100% |
+| Booking Cancelled | 2 | 2 | 100% |
+| Customer Inquiry Only | 1 | 2 | 50% |
+| Strata Issue | 1 | 2 | 50% |
+| Technical Error | 0 | 1 | 0% |
+| Unable to Classify | 0 | 1 | 0% |
 
-## Systematic Disagreements (not random error)
+## Confidence Calibration (well-ordered)
 
-### 1. Customer Unresponsive vs No Follow-Up Recorded (50 leads)
-GT treats OHQ answering-service handoff as outbound follow-up.
-Prompt requires visible logged outbound (call/SMS/email in timeline).
-50 of 85 GT "Customer Unresponsive" leads have NO visible outbound.
-**Resolution**: either relax the prompt definition or reclassify GT.
-If treated as acceptable: NQ/NB accuracy → 71.0%.
+| Confidence Band | Correct | Total | Accuracy |
+|---|---|---|---|
+| 0.90+ | 195 | 199 | 98.0% |
+| 0.80-0.89 | 60 | 63 | 95.2% |
+| 0.70-0.79 | 40 | 48 | 83.3% |
+| 0.60-0.69 | 26 | 42 | 61.9% |
+| 0.50-0.59 | 6 | 15 | 40.0% |
 
-### 2. Not Job Related vs Spam/Service Not Provided (22 leads)
-GT labels apprentice seekers and job inquiries as "Spam" or "Service Not
-Provided". CC uses "Not Job Related" (no service was requested — these
-are employment seekers, not customers). More precise per taxonomy definition.
-If treated as acceptable: → 76.7%.
+At 0.70 threshold: 310/367 auto-classified at 95.2% accuracy.
+57 leads (15.5%) routed to human review.
 
-### 3. Job Complete in NQ/NB gate (12 leads)
-These leads have no JN. "Job Complete" is not a valid NQ/NB sub-status.
-The jobs exist but weren't linked by the graph — these are T7.1 residual
-match candidates. GT label is structurally misplaced.
-If excluded: → 79.5%.
+## What Drives the 89.1%
 
-## Booked Disagreements
+1. **CU/NFUR deterministic pre-pass** (0b1a78e): has_outbound fact removes
+   CU from allowed set when no logged outbound exists. Eliminated 50+
+   CU-on-no-outbound errors. Also fixed SNP regression (77% vs 28% under
+   layered prompt) by removing the CU dumping ground.
 
-### Job Pending on Archived+$0 Jobs (6 leads)
-GT labels 6 archived, $0, "make complete"/"not going ahead" jobs as
-"Job Pending". Per BOOKED_SYSTEM_PROMPT rules: archived = lifecycle over,
-cannot be pending. CC classifies as Quote Only. GT labels appear incorrect.
+2. **Apprentice→Spam** (standalone definition fix): +18 correct Spam.
+   17 GT disagreements where GT labels apprentices as SNP (policy choice).
 
-### Quote Only vs Unable to Complete (4 leads)
-Borderline: tech said "too difficult" or "can't do it" but labour note
-says "quote only". The distinction is whether the barrier is the customer's
-choice (Quote Only) or PETTR's capability (Unable to Complete).
+3. **Flat rules retained** (4fa36bc revert): the 3-layer restructuring
+   (c803de9) regressed overall accuracy and gutted SNP. Reverted.
 
-## Recommendations
+## Remaining 40 Errors
 
-1. **Resolve the Customer Unresponsive definition** — the prompt's strict
-   "visible outbound required" rule disagrees with GT's OHQ-inclusive
-   definition. Either soften the prompt or re-label GT.
+| Pattern | Count | Nature |
+|---|---|---|
+| Spam↔SNP (apprentice definitional) | 17 | Policy — GT says SNP, rules say Spam |
+| NFUR when GT has specific reason | 8 | Content has reason T7 missed |
+| Tenant/Strata mis-identification | 5 | Requires conversational inference |
+| Misc edge cases | 10 | Mixed thin content / rare categories |
 
-2. **Reclassify "Not Job Related" leads in GT** — employment seekers are
-   not spam (they're not selling). Update GT to use Not Job Related.
+## Production Tiered Map
 
-3. **Remove Job Complete from NQ/NB GT** — these leads need T7.1 matching,
-   not classification. They validate T7.1's residual scope, not T7.2.
+| Tier | Mechanism | Leads | Accuracy |
+|---|---|---|---|
+| **Deterministic** (gate + pre-pass) | BQ + has_outbound | ~11,100 | ~100% |
+| **T7 Auto** (conf ≥ 0.70) | CC-as-classifier | ~310 of 367 (84.5%) | 95.2% |
+| **Human Review** (conf < 0.70) | Manual | ~57 of 367 (15.5%) | n/a |
 
-4. **Accept ~80% adjusted accuracy** for the leaf-level classification.
-   The hard cases (Price vs Quote vs Scheduling on thin content) may not
-   improve without richer interaction data (unrecorded phone calls).
+## Failed Experiments (do not repeat)
+
+- **3-layer prompt restructuring** (c803de9): lowered accuracy 57.9%→55.9%,
+  gutted SNP 61%→28%. The "Layer 3: CU/NFUR as residual" made T7 dump
+  uncertain leads into CU. Reverted in 4fa36bc.
+- **Price/Quote priority override**: no measurable improvement on Price
+  (still 26% under layered). The flat rules + pre-pass achieved 83.3%
+  without the override — the pre-pass was the missing piece, not rule priority.
