@@ -54,7 +54,7 @@ export interface ClassifierInput {
  */
 export async function assembleTouchesFromTimeline(
   queryFn: QueryFn, opportunityId: string, opts?: { dataset?: string }
-): Promise<{ touches: EnrichedTouch[]; job_description: string | null; labour_notes: string | null; task_notes: string | null; gate_stage: string | null; has_logged_outbound: boolean }> {
+): Promise<{ touches: EnrichedTouch[]; job_description: string | null; labour_notes: string | null; task_notes: string | null; gate_stage: string | null; has_logged_outbound: boolean; has_internal_touch: boolean }> {
   const ds = opts?.dataset || DEFAULT_DS
 
   // Single query: all touches + job content + gate from lead_timeline
@@ -64,7 +64,8 @@ export async function assembleTouchesFromTimeline(
     interaction_date: string; interaction_time: string
     interaction_operator: string | null; interaction_duration_seconds: number | null
     interaction_summary: string | null; call_id: string | null
-    called_did_label: string | null; body_source: string | null; body_id: string | null
+    called_did_label: string | null; is_internal_did: boolean | null
+    body_source: string | null; body_id: string | null
     touch_source: string | null
     full_content: string | null
     task_description: string | null
@@ -75,7 +76,7 @@ export async function assembleTouchesFromTimeline(
     SELECT interaction_id, lead_id, interaction_type, interaction_datetime,
       interaction_date, interaction_time, interaction_operator,
       interaction_duration_seconds, interaction_summary, call_id,
-      called_did_label, body_source, body_id, touch_source,
+      called_did_label, is_internal_did, body_source, body_id, touch_source,
       full_content,
       task_description, labour_notes, task_notes, gate_stage
     FROM \`${ds}.lead_timeline\`
@@ -83,7 +84,7 @@ export async function assembleTouchesFromTimeline(
     ORDER BY interaction_datetime ASC
   `, { opportunityId })
 
-  if (rows.length === 0) return { touches: [], job_description: null, labour_notes: null, task_notes: null, gate_stage: null, has_logged_outbound: false }
+  if (rows.length === 0) return { touches: [], job_description: null, labour_notes: null, task_notes: null, gate_stage: null, has_logged_outbound: false, has_internal_touch: false }
 
   // Job content + gate are per-opp (same on every row) — take from first row
   const job_description = rows[0].task_description
@@ -97,6 +98,11 @@ export async function assembleTouchesFromTimeline(
   const has_logged_outbound = rows.some(r =>
     r.interaction_type === 'Outbound Call' || r.interaction_type === 'Outbound Email'
   )
+
+  // NJR pre-pass: does this lead have ANY touch on an internal DID?
+  // is_internal_did from lkp_did_trade (staff extensions like Mario, Katrina, etc.).
+  // If FALSE on all touches → NJR removed from allowed set (external callers ≠ NJR).
+  const has_internal_touch = rows.some(r => r.is_internal_did === true)
 
   // Map touches: use materialised full_content, infer content_source from touch_source
   const touches: EnrichedTouch[] = rows.map(r => ({
@@ -143,7 +149,7 @@ export async function assembleTouchesFromTimeline(
     }
   }
 
-  return { touches, job_description, labour_notes, task_notes, gate_stage, has_logged_outbound }
+  return { touches, job_description, labour_notes, task_notes, gate_stage, has_logged_outbound, has_internal_touch }
 }
 
 function inferContentSource(touchSource: string | null, bodySource: string | null): string | null {
@@ -359,6 +365,7 @@ export async function buildClassifierInputFromTimeline(
     },
     gate_stage: timeline.gate_stage,
     has_logged_outbound: timeline.has_logged_outbound,
+    has_internal_touch: timeline.has_internal_touch,
   }
 }
 

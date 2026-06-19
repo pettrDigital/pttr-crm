@@ -663,6 +663,11 @@ WITH candidates AS (
       (excl.match_tier = 'auto:sms_jn_tier'
         AND ABS(DATE_DIFF(tc.requested_date_parsed,
                           DATE(o.opportunity_timestamp), DAY)) <= 30)
+      OR
+      -- t7_match: AI-matched Account jobs, forward 0–30d
+      (excl.match_tier = 'auto:t7_match'
+        AND DATE_DIFF(tc.requested_date_parsed,
+                      DATE(o.opportunity_timestamp), DAY) BETWEEN 0 AND 30)
     )
 )
 SELECT matched_phone, jobnumber, match_tier, opportunity_id,
@@ -1033,11 +1038,44 @@ WHERE m.customer_type = 'Account'
     SELECT opportunity_id FROM `pttr-taskdata.ds_crm.crm_account_exclusions`
   );
 
+-- ====== T7.1 COD match propagation ======
+-- Propagates JN from crm_t7_match_queue (COD AI-matched leads) to opportunities.
+-- Keyed on wc_lead_id + jobnumber (stable across opportunity_id rebuilds).
+-- wc_lead_id is immutable (WhatConverts ID); matched_phone may be NULL for
+-- name-only/verbatim-problem matches.
+-- Sets opp_type = 'job_matched' (COD matches are graph-linked, not account_linked).
+-- Idempotent: only updates gap_based opps with no existing JN.
+
+UPDATE `pttr-taskdata.ds_crm.opportunities` o
+SET
+  o.jobnumber      = q.jobnumber,
+  o.job_task_type  = tc.task_type,
+  o.job_status     = tc.job_status,
+  o.job_count      = 1,
+  o.all_jobnumbers = q.jobnumber,
+  o.opp_type       = 'job_matched'
+FROM `pttr-taskdata.ds_crm.crm_t7_match_queue` q
+JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON q.jobnumber = tc.jobnumber
+WHERE q.match_tier = 'auto:t7_match'
+  AND q.wc_lead_id IS NOT NULL
+  AND o.wc_lead_id = q.wc_lead_id
+  AND o.opp_type = 'gap_based'
+  AND o.jobnumber IS NULL;
+
+-- Refresh crm_t7_match_queue.opportunity_id after rebuild (G- IDs change)
+-- Key: wc_lead_id + jobnumber (stable)
+UPDATE `pttr-taskdata.ds_crm.crm_t7_match_queue` q
+SET q.opportunity_id = o.opportunity_id
+FROM `pttr-taskdata.ds_crm.opportunities` o
+WHERE q.wc_lead_id = o.wc_lead_id
+  AND q.match_tier = 'auto:t7_match'
+  AND o.jobnumber = q.jobnumber;
+
 -- ====== §6 post-link: Refresh crm_account_exclusions.opportunity_id ======
 -- After rebuild, G- IDs have changed. Refresh using stable keys so the
 -- dashboard anti-join (queries.ts:653) continues working.
 
--- Linked rows: generic refresh for ALL tiers (§5.1 + SMS-JN + T3 content-phone + T3 job-side)
+-- Linked rows: generic refresh for ALL tiers (§5.1 + SMS-JN + T3 content-phone + T3 job-side + T7.1)
 -- Joins on stable keys (matched_phone + jobnumber) → rebuilt opportunity_id
 UPDATE `pttr-taskdata.ds_crm.crm_account_exclusions` excl
 SET excl.opportunity_id = o.opportunity_id,
@@ -1045,7 +1083,7 @@ SET excl.opportunity_id = o.opportunity_id,
 FROM `pttr-taskdata.ds_crm.opportunities` o
 WHERE excl.matched_phone = o.phone
   AND excl.jobnumber IS NOT NULL
-  AND o.opp_type = 'account_linked'
+  AND o.opp_type IN ('account_linked', 'job_matched')
   AND o.jobnumber = excl.jobnumber;
 
 -- Flag-only rows (no jobnumber): match via matched_phone → most recent gap_based opp.

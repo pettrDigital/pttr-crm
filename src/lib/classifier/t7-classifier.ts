@@ -415,10 +415,21 @@ export function resolveGate(gate_stage: string): {
  *   interaction_type IN ('Outbound Call', 'Outbound Email').
  *   OHQ/Answering Service does NOT count. 0-duration outbound calls DO count.
  */
+/**
+ * Resolve the NQ/NB allowed set based on deterministic pre-pass facts.
+ *
+ * @param has_logged_outbound - FALSE removes CU (can't be unresponsive without outbound)
+ * @param has_internal_touch - FALSE removes NJR (external callers are never internal ops)
+ */
 export function resolveNqNbAllowedSet(
-  has_logged_outbound: boolean
+  has_logged_outbound: boolean,
+  has_internal_touch: boolean = true  // default TRUE to preserve existing behaviour
 ): readonly string[] {
-  return has_logged_outbound ? NQ_NB_ALLOWED : NQ_NB_ALLOWED_NO_OUTBOUND
+  let set: string[] = [...(has_logged_outbound ? NQ_NB_ALLOWED : NQ_NB_ALLOWED_NO_OUTBOUND)]
+  if (!has_internal_touch) {
+    set = set.filter(s => s !== 'Not Job Related')
+  }
+  return set
 }
 
 /**

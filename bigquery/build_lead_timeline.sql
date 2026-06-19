@@ -117,6 +117,7 @@ wc_interactions AS (
     LEFT(COALESCE(ale.caller_name, ''), 300) AS interaction_summary,
     rc.call_id,
     did.label AS called_did_label,
+    COALESCE(did.is_internal, FALSE) AS is_internal_did,
     CASE WHEN rc.call_id IS NOT NULL THEN 'call' ELSE 'wc_call' END AS body_source,
     COALESCE(rc.call_id, CAST(ale.lead_id AS STRING)) AS body_id,
     -- Materialised transcript: WC primary (this call's own WC lead), 8x8 fallback.
@@ -172,6 +173,7 @@ phone_calls AS (
     CAST(NULL AS STRING) AS interaction_summary,
     rc.call_id,
     did.label AS called_did_label,
+    COALESCE(did.is_internal, FALSE) AS is_internal_did,
     'call' AS body_source,
     rc.call_id AS body_id,
     -- Materialised transcript: 8x8 primary. WC fallback via spine mapping.
@@ -228,6 +230,7 @@ email_thread_replies AS (
     LEFT(COALESCE(reply.subject, reply.body_preview, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_received' AS body_source,
     reply.message_id AS body_id,
     LEFT(COALESCE(reply.body_text, reply.body_preview), 4000) AS full_content
@@ -326,6 +329,7 @@ form_submissions AS (
     LEFT(COALESCE(fc.form_content, wc.form_my_problem, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'wc_form' AS body_source,
     CAST(wc.lead_id AS STRING) AS body_id,
     -- Full form content (up to 2000 chars — matches classifier form budget)
@@ -350,6 +354,7 @@ form_submissions AS (
     LEFT(COALESCE(lu.form_problem, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_received' AS body_source,
     REPLACE(lu.lead_id, 'email-', '') AS body_id,
     -- Full form content for email-parsed forms
@@ -375,6 +380,7 @@ form_submissions AS (
     LEFT(COALESCE(lu.form_problem, lu.contact_name, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_received' AS body_source,
     REPLACE(lu.lead_id, 'email-', '') AS body_id,
     LEFT(COALESCE(lu.form_problem, lu.contact_name, ''), 2000) AS full_content
@@ -403,6 +409,7 @@ ohq_emails AS (
     LEFT(e.body_preview, 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_received' AS body_source,
     e.message_id AS body_id,
     -- Full OHQ message body (customer details, problem description)
@@ -451,6 +458,7 @@ sms_threads AS (
     LEFT(body_preview, 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_received' AS body_source,
     message_id AS body_id,
     -- Full SMS body (reply + original message)
@@ -478,6 +486,7 @@ task_emails AS (
     LEFT(COALESCE(e.subject, e.body_preview, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     'email_sent' AS body_source,
     e.message_id AS body_id,
     LEFT(COALESCE(e.body_text, e.body_preview), 4000) AS full_content
@@ -666,6 +675,7 @@ outlook_emails AS (
     LEFT(COALESCE(CONCAT('[', oa.link_path, '] ', oa.subject), oa.body_preview, ''), 300) AS interaction_summary,
     CAST(NULL AS STRING) AS call_id,
     CAST(NULL AS STRING) AS called_did_label,
+    FALSE AS is_internal_did,
     CASE WHEN oa.interaction_type LIKE '%Outbound%' THEN 'email_sent' ELSE 'email_received' END AS body_source,
     oa.message_id AS body_id,
     -- Full email body: join back to source for body_text

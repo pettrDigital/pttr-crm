@@ -445,6 +445,9 @@ LEFT JOIN (
     AND TIMESTAMP_ADD(o.opportunity_timestamp, INTERVAL 10 MINUTE)
   AND ohq.ohq_name IS NOT NULL
 -- §6: Account flags
+-- §6: Account flags from crm_account_exclusions.
+-- T7.1 AI matches (match_tier='auto:t7_match') flow live with review_recommended=TRUE.
+-- The hold-out filter (needs_audit) is REMOVED — the dual booking rate in
+-- getDashboardStats (bookings_confirmed vs bookings_total) is the metric guard.
 LEFT JOIN `pttr-taskdata.ds_crm.crm_account_exclusions` acct_excl
-  ON o.opportunity_id = acct_excl.opportunity_id
-  AND NOT (acct_excl.match_tier = 'auto:t7_match' AND COALESCE(acct_excl.needs_audit, FALSE) = TRUE);
+  ON o.opportunity_id = acct_excl.opportunity_id;
