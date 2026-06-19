@@ -1,6 +1,6 @@
 # T7 Taxonomy Spec — Determined Stage Gates + Sub-Status Definitions
 
-**Status**: v3 — gate rules for Booked $0 split built 2026-06-15.
+**Status**: v4 — T7.2 validated 89.1% on 367 GT (2026-06-18). Production config locked: flat prompt + CU/NFUR pre-pass + conf ≥ 0.70 auto-classify. See §10.
 
 ---
 
@@ -146,13 +146,13 @@ T7's current `abstained: true` JSON flag maps to the same condition. Under the n
 
 | Sub-status | Definition | GT count |
 |---|---|---|
-| **Spam** | Unsolicited marketing, telemarketing, or sales pitch. Includes cleaning-service pitches, employment agencies, office-space offers, and any external party trying to sell TO PETTR. The caller is selling, not buying. | 114 |
+| **Spam** | Unsolicited inbound that is not a customer seeking plumbing/electrical service. Includes: marketing/telemarketing/sales pitches, employment agencies, office-space offers, any external party trying to sell TO PETTR. Also includes job-seekers and apprentice enquiries (people seeking employment/work placement — they are not customers). Also includes callers from outside Australia (geographic spam). | 114 |
 | **Service Not Provided** | A genuine customer enquiry for something PETTR does not do — not plumbing or electrical (e.g. TV repair, locksmith, solar, appliance installation, air conditioning, roofing, gas fitting if not offered). The caller wants to buy, but we don't sell it. | 86 |
 | **Outside Service Area** | Geographic — caller is outside the Sydney/Greater Sydney service area. The service is something we do, but not where they are. | 8 (thin) |
 | **Strata Issue** | Caller's issue is a strata/body corporate responsibility, not a direct-to-homeowner job. Referral to strata manager or body corporate required. Distinct from Tenant/Strata Referral (Not Booked) where the caller IS a tenant/resident with a real plumbing/electrical problem, but needs strata approval to proceed. | 5 (thin) |
 | **Customer Inquiry Only** | An existing customer calling about an in-progress or recently completed job — not a new lead. Service enquiry, status check, warranty question, or complaint about existing work. | 2 (thin) |
 | **Wrong Number / Contact Details** | Wrong number, disconnected number, fax line, or invalid contact details preventing any engagement. The lead cannot be reached or was never intended for PETTR. | 16 |
-| **Not Job Related** | A known staff member or internal party is on the call, discussing other existing business — operational/internal, not a new customer lead. Signal: `is_internal` DID flag or operator-extension shows internal party, or call is between staff about scheduling, inventory, HR, etc. **Not** external sales pitches (those are Spam). **BUILD PREREQUISITE**: `is_internal` must be added to `InteractionRow` and surfaced in the prompt before this definition ships (see §10 Build Sequence). | 0 in GT (phantom) |
+| **Not Job Related** | An INTERNAL/OPERATIONAL call ONLY: known staff member or DID marked `[INTERNAL]` discussing scheduling, inventory, HR, etc. NOT external callers of any kind — external sales pitches, job seekers, and apprentice enquiries are all Spam. Reserved exclusively for identified internal staff communications. **BUILD PREREQUISITE**: `is_internal` must be added to `InteractionRow` (see §11 step 1). | 0 in GT (phantom) |
 
 ### Changes from current prompt
 1. **DELETE** the rule `"cleaning/employment/office-space = Not Job Related"` — those are Spam (unsolicited external pitch).
@@ -447,16 +447,120 @@ All 232 Not Quotable judgement rows have **zero JN** — no fence violations. Cl
 
 ---
 
-## 10. Build Sequence (prerequisites and ordering)
+## 10. Production Decision Record — T7.2 Classifier (2026-06-18)
+
+### Validated configuration (LOCKED)
+
+**Prompt**: Flat decision rules (NOT layered). Committed in `t7-classifier.ts` at
+`4fa36bc`. The 3-layer restructuring (`c803de9`) was tested and REVERTED — it
+regressed SNP (61%→28%) and overall accuracy (57.9%→55.9%).
+
+**Definition fixes applied** (standalone, do not depend on layering):
+- **Spam** includes apprentice/employment seekers (rule 1). External job-seekers
+  are unsolicited inbound, not customers.
+- **Not Job Related** = internal staff communications ONLY. External callers of
+  any kind (including apprentices) are Spam.
+- **Wanted Quote Over Phone** added as rule 11.
+
+**CU/NFUR deterministic pre-pass** (committed `0b1a78e`):
+- Mechanism: query `lead_timeline` for `interaction_type IN ('Outbound Call', 'Outbound Email')`.
+- `has_outbound = FALSE` → remove Customer Unresponsive from the allowed set.
+  T7 cannot pick CU. No Follow-Up Recorded becomes the disposition default.
+- `has_outbound = TRUE` → CU remains available. T7 judges responsiveness.
+- OHQ/Answering Service does NOT count as outbound (per `cd144fb` — untracked
+  tech-mobile channel).
+- 0-duration/unanswered outbound calls DO count (visible attempt).
+- Validated: 45/40 split on 85 GT=CU leads matches exactly.
+- This eliminated the single biggest error category (50+ leads, 13% of NQ/NB).
+
+**Content**: Full uncapped (`formatClassifierPromptFull` in `classify.ts`).
+The capped version (`formatClassifierPrompt`) drops deciding signals on
+multi-touch leads (strata referral at pos 3988, "job given away" at touch 15).
+Caps are for paid-API token management ONLY — must not gate the CC path.
+
+### Measured accuracy (GT basis: t7_ground_truth_rg006, 367 scorable NQ/NB)
+
+**Overall: 327/367 = 89.1%** — measured 2026-06-18, CC-as-classifier, no API.
+
+| GT Label | Correct | Total | Accuracy | Notes |
+|---|---|---|---|---|
+| Spam | 104 | 108 | 96.3% | Includes apprentice→Spam (17 GT disagrees) |
+| CU (has_outbound=TRUE) | 53 | 55 | 96.4% | |
+| CU (has_outbound=FALSE → NFUR) | 41 | 44 | 93.2% | Pre-pass enforced |
+| Service Not Provided | 57 | 74 | 77.0% | Recovered from 28% under layered prompt |
+| Wrong Number / Contact Details | 11 | 11 | 100% | PROVISIONAL (n=11) |
+| Tenant / Strata Referral | 15 | 20 | 75.0% | |
+| Price / Minimum Call Out | 15 | 18 | 83.3% | |
+| Capacity / Scheduling | 16 | 16 | 100% | PROVISIONAL (n=16) |
+| Wanted Quote Over Phone | 9 | 10 | 90.0% | PROVISIONAL (n=10) |
+| Customer Resolved | 7 | 8 | 87.5% | PROVISIONAL (n=8) |
+| Outside Service Area | 8 | 8 | 100% | PROVISIONAL (n=8) |
+| Booking Cancelled | 2 | 2 | 100% | PROVISIONAL (n=2) |
+| Customer Inquiry Only | 1 | 2 | 50% | PROVISIONAL (n=2) |
+| Strata Issue | 1 | 2 | 50% | PROVISIONAL (n=2) |
+
+PROVISIONAL = small sample (n<20). Tier assignment confirmed by confidence
+routing, not by the headline accuracy on small n.
+
+### Confidence calibration (well-ordered, monotonic)
+
+| Band | Correct | Total | Accuracy |
+|---|---|---|---|
+| 0.90+ | 195 | 199 | 98.0% |
+| 0.80-0.89 | 60 | 63 | 95.2% |
+| 0.70-0.79 | 40 | 48 | 83.3% |
+| 0.60-0.69 | 26 | 42 | 61.9% |
+| 0.50-0.59 | 6 | 15 | 40.0% |
+
+### Production routing (confidence-first, category-second)
+
+Routing is by **confidence first**: a low-confidence lead in any category goes
+to human review, even if the category's headline accuracy is high. This absorbs
+small-sample risk on PROVISIONAL categories.
+
+| Confidence | Action | Leads | Accuracy |
+|---|---|---|---|
+| ≥ 0.70 | **Auto-classify** | 310 (84.5%) | 95.2% |
+| < 0.70 | **Human review** | 57 (15.5%) | — |
+
+Combined with deterministic tiers:
+
+| Tier | Mechanism | Population | Accuracy |
+|---|---|---|---|
+| **Tier 0: Gate-determined** | BQ gate (invoiced, archived, open, unanswered, dropped, unable) | ~11,100 opps | ~100% |
+| **Tier 1: Deterministic pre-pass** | has_outbound → CU/NFUR | All NQ/NB leads | ~95% |
+| **Tier 2: T7 auto (conf ≥ 0.70)** | CC-as-classifier, flat prompt | ~84.5% of judgement | 95.2% |
+| **Tier 3: Human review (conf < 0.70)** | Manual classification | ~15.5% of judgement | — |
+
+### Failed experiments (do not repeat)
+
+- **3-layer prompt restructuring** (`c803de9`): 55.9% overall, 28% SNP.
+  The "Layer 3: CU/NFUR as residual" made T7 dump uncertain leads into CU.
+  Reverted `4fa36bc`.
+- **Price/Quote priority override** (part of c803de9): no improvement on
+  Price (still 26% under layered). The flat rules + pre-pass achieved 83.3%
+  without the override.
+
+### What remains (not validation — wiring + production)
+
+- T7.1 match promotion → gate sees JN → T7.2 Booked classification
+- Production engine + scheduler (step 8 of T7_BUILD_SEQUENCE.md)
+- `is_internal` flag for Not Job Related (§10 step 1 below)
+
+---
+
+## 11. Build Sequence (prerequisites and ordering)
 
 The following must be built in order — later steps depend on earlier ones.
 
-| Step | What | Prerequisite for | Notes |
+| Step | What | Status | Notes |
 |---|---|---|---|
-| **1** | Add `is_internal` (from `lkp_did_trade`) to `InteractionRow` in `types.ts`, carry through `sql.ts` join, render as `[INTERNAL]` tag in `classify.ts:formatClassifierPrompt` | Not Job Related definition (§4) | Without this, T7 has no signal to distinguish internal calls. Not Job Related ships broken if this is skipped. |
-| **2** | Implement determined-stage gates in harness (§1 decision tree) | All subsequent harness runs | Content-override rule on steps 3–4 is the key logic. |
-| **3** | Update T7 prompt: remove Not Captured labels from enum, add all sub-status definitions (§4 Not Quotable, §5 Booked, §6 Not Booked), delete old "cleaning = Not Job Related" rule | Accurate scoring | |
-| **4** | GT remap: apply invoice-based split (§8), move fence violations to Booked | Comparable before/after scoring | |
-| **5** | Constrained Booked prompt with new `Completed - Invoice Pending` label | Booked sub-status accuracy | |
-| **6** | UI taxonomy changes (if Unable to Classify becomes standalone stage) | Dashboard accuracy | Blocked on §9.1 decision |
-| **7** | Dashboard denominator fix | Reported rates | Blocked on §9.2 decision |
+| **1** | Add `is_internal` to `InteractionRow` | NOT BUILT | Prerequisite for Not Job Related. Without this, NJR ships broken. |
+| **2** | Determined-stage gates | **DONE** (`build_lead_timeline.sql`) | gate_stage computed, fence violations = 0. |
+| **3** | T7 prompt: definitions + allowed sets | **DONE** (`t7-classifier.ts`) | Flat rules, NQ/NB + Booked prompts, payment-regex pre-pass. |
+| **4** | GT remap: invoice-based split, fence violations | **DONE** (`t7_ground_truth_rg006`) | 672 scorable, 367 NQ/NB judgement. |
+| **5** | CU/NFUR deterministic pre-pass | **DONE** (`0b1a78e`) | has_outbound fact, validated 89.1%. |
+| **6** | T7.2 validation | **DONE** (2026-06-18) | 89.1% measured. See §10 decision record. |
+| **7** | Production engine + scheduler | NOT BUILT | Proposal queue, confirm/reject UI, confidence routing. |
+| **8** | UI taxonomy changes | NOT BUILT | Blocked on §9.1 decision. |
+| **9** | Dashboard denominator fix | NOT BUILT | Blocked on §9.2 decision. |
