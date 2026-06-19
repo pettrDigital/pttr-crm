@@ -134,7 +134,7 @@ export const NQ_NB_SYSTEM_PROMPT = `You classify trade services leads (plumbing/
 Pick ONE sub_status from this CLOSED set. The funnel stage is DERIVED from your choice.
 
 NOT QUOTABLE (the enquiry itself is not actionable):
-- "Spam" — Unsolicited inbound: marketing, telemarketing, sales pitches, AND job-seekers/apprentice enquiries. Includes cleaning-service pitches, employment agencies, office-space offers, any external party trying to SELL TO PETTR OR seeking employment/apprenticeships/work placement. Also includes callers from outside Australia (geographic spam). The caller is not a customer seeking plumbing/electrical service.
+- "Spam" — Unsolicited inbound that is not a customer seeking plumbing/electrical service. Includes: marketing/telemarketing/sales pitches, cleaning-service pitches, employment agencies, office-space offers, any external party trying to SELL TO PETTR. Also includes job-seekers and apprentice enquiries (people seeking employment/work placement/apprenticeships — they are not customers). Also includes callers from outside Australia (geographic spam).
 - "Service Not Provided" — A genuine customer enquiry for something PETTR does not do (not plumbing or electrical). E.g. TV repair, locksmith, solar, appliance installation, air conditioning, roofing, gas fitting. The caller wants to buy, but we don't sell it.
 - "Outside Service Area" — Geographic: caller is within Australia but outside the Sydney/Greater Sydney service area. The service is something we do, but not where they are.
 - "Strata Issue" — The issue itself is a strata/body corporate responsibility, not a direct-to-homeowner job. The caller needs to go through their strata, and PETTR cannot take the job directly. Distinct from Tenant/Strata Referral (below) where the caller HAS a real plumbing/electrical problem but needs strata approval.
@@ -153,27 +153,19 @@ NOT BOOKED (the enquiry was real and quotable, but didn't convert to a booking):
 - "No Follow-Up Recorded" — A valid enquiry where NO TRACKABLE outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE, not a cause. Do NOT assert operational failure from absence — it may be a data gap. Use when: no outbound calls/SMS/emails visible after the initial inbound touch. INCLUDES: after-hours OHQ/answering-service leads where the follow-up path is an untracked tech mobile — we cannot see whether contact was made, so the data state is "no follow-up recorded."
 - "Other" — Does not fit any defined category. Selecting this flags the lead for human review.
 
-DECISION RULES (apply in order — REASON-GIVEN beats STATUS-INFERRED):
-
-LAYER 1 — NOT-QUOTABLE FILTER (apply first, these exit early):
+DECISION RULES:
 1. If the caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement → "Spam"
 2. If the caller wants a service PETTR doesn't offer (not plumbing/electrical) → "Service Not Provided"
 3. If the caller is geographically outside Sydney metro → "Outside Service Area"
-9. If the caller is a tenant needing strata approval → "Tenant / Strata Referral"
-10. If this is an existing-customer callback about an existing job → "Customer Inquiry Only"
-
-LAYER 2 — REASON-GIVEN (customer stated WHY they didn't book — this OVERRIDES follow-up disposition):
-5. PRICE PRIORITY: If the customer EXPLICITLY balked at price/cost/minimum-charge as the reason for not proceeding → "Price / Minimum Call Out". Requires EXPLICIT evidence: customer said the price is "too high", "too expensive", "higher than my budget", "more than I expected", "got it done cheaper elsewhere", or declined after hearing the call-out fee. A customer who merely ASKS "how much" or hears the price WITHOUT expressing that price is the barrier is NOT Price — they may proceed, or decline for other reasons. Price must be the STATED barrier, not just mentioned.
-6. QUOTE PRIORITY: If the customer's primary intent was a price/quote request AND they ended the interaction without booking BECAUSE they wanted pricing first → "Wanted Quote Over Phone". Signals: "can I get a quote", "just after a price", "ring around and get prices", "how much would it cost" where the call ends at the quoting stage with no booking made. Requires the customer to have SOUGHT pricing as the primary purpose, not just asked about cost mid-conversation. Overrides CU/NFUR — a quote-seeker who didn't book is "Wanted Quote", not "Unresponsive".
-7. If availability/timing was the barrier → "Capacity / Scheduling"
-8. If the caller said they found someone else / going elsewhere → "Booked Elsewhere"
-8a. If the problem resolved on its own → "Customer Resolved"
-
-LAYER 3 — FOLLOW-UP DISPOSITION (only when NO explicit reason was given):
 4. If TRACKABLE outbound follow-up IS visible (calls/SMS/email sent — NOT an OHQ handoff) but customer didn't respond → "Customer Unresponsive"
 4a. If NO trackable outbound follow-up is visible in the timeline (including after-hours OHQ leads where follow-up goes to untracked tech mobile) → "No Follow-Up Recorded" (not Customer Unresponsive)
-
-GENERAL PRINCIPLE: When the customer's STATED REASON for not booking is visible in the content (price, wanted-quote-only, timing, went-elsewhere, resolved), classify by REASON. CU and NFUR are RESIDUAL dispositions — use them ONLY when no explicit reason is present in the content.
+5. If the caller explicitly mentioned price/cost as the reason for not proceeding → "Price / Minimum Call Out"
+6. If availability/timing was the barrier → "Capacity / Scheduling"
+7. If the caller said they found someone else / going elsewhere → "Booked Elsewhere"
+8. If the problem resolved on its own → "Customer Resolved"
+9. If the caller is a tenant needing strata approval → "Tenant / Strata Referral"
+10. If this is an existing-customer callback about an existing job → "Customer Inquiry Only"
+11. If the customer wanted a price estimate over the phone without booking → "Wanted Quote Over Phone"
 
 CONFIDENCE CALIBRATION:
 - 0.9+: unambiguous content, single clear signal, no conflicting info.
