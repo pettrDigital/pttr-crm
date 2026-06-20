@@ -259,3 +259,27 @@ commit, file). State lives in the spec; this log records how it got there.
   Three invalid combos rejected with descriptive messages.
 
 ---
+
+## 2026-06-20 — L3 prep, late-stage population bug caught
+
+- DECISION: testExclusionWhereClause in test-exclusion.ts had a
+  NULL-handling regression — LEFT JOIN to all_leads_enriched
+  produces NULL for the 180 CSV leads with no enriched row, and
+  NOT (NULL OR ...) evaluates to NULL = falsy, silently excluding
+  81 real customer leads from Step 7's classification population.
+  Same silent-drop pattern as June 20's 602→548. Caught by the
+  L3 §3 population reconciliation Q1, before any classification
+  committed. Fix: wrap the exclusion clause in COALESCE(..., FALSE)
+  so NULL ALE = not excluded. Patched in test-exclusion.ts; one
+  source of truth, one fix.
+
+- DEFERRED (L2 gap, low priority): the L2 footing-halt protects
+  the 1,215 manifest population, not the Step 7 judgement-residual
+  subset. A bug in the judgement-population query (like this one)
+  does not trip footing-halt. Today's fix makes this moot for the
+  current run, but worth an entry: a future Step 7 bug could
+  silently shift the classification population without firing
+  footing-halt. Possible future work: add a judgement-subset
+  count check at Step 7 against an expected envelope.
+
+---

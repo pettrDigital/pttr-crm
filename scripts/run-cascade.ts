@@ -25,6 +25,7 @@ import * as path from 'path'
 import { SUB_STATUS_TO_STAGE, assertValidLeaf } from '../src/lib/classifier/taxonomy'
 import { validateT72Rationale, validateT71Rationale } from '../src/lib/cascade/rationale'
 import type { T72Rationale, T71Rationale } from '../src/lib/cascade/rationale'
+import { reconMappedOppsCTE } from '../src/lib/cascade/wc-mapping'
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const PROJECT_ID = 'pttr-taskdata'
@@ -375,12 +376,19 @@ async function step6_writeMatches(): Promise<void> {
 async function step7_classify(prePasses: PrePassResult[]): Promise<string> {
   console.log('STEP 7: T7.2 CLASSIFY — assembling input...')
 
-  // Get the judgement population AFTER re-build
+  // Get the judgement population AFTER re-build.
+  // Pre-pass facts: has_outbound (CU/NFUR gate), has_internal_touch (NJR gate).
+  // Job-side content: folded into full_timeline as labelled rows (option (a) — same
+  //   narrative shape the validated 89.1% model reads, no prompt template change).
+  // Population: scoped to reconciliation_1215 mapped opps via reconMappedOppsCTE
+  //   from wc-mapping.ts (single source of truth for the 3-way join).
+  const reconCTE = reconMappedOppsCTE(DS)
   const judgementLeads = await runQuery<{
     opportunity_id: string
     wc_lead_id: number
     gate_stage: string
     has_outbound: boolean
+    has_internal_touch: boolean
     contact_name: string | null
     channel: string
     service: string
@@ -388,32 +396,61 @@ async function step7_classify(prePasses: PrePassResult[]): Promise<string> {
     full_timeline: string
     total_content_chars: number
   }>(`
+    WITH ${reconCTE}
     SELECT o.opportunity_id, o.wc_lead_id, g.gate_stage,
       COALESCE(ob.has_outbound, FALSE) AS has_outbound,
+      COALESCE(ob.has_internal, FALSE) AS has_internal_touch,
       le.contact_name, le.channel, le.service, le.suburb,
       lt_agg.full_timeline, lt_agg.total_content_chars
     FROM \`${DS}.opportunities\` o
     JOIN \`${DS}.lead_gate\` g ON o.opportunity_id = g.opportunity_id
+    JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
     LEFT JOIN (
       SELECT opportunity_id,
-        MAX(CASE WHEN interaction_type IN ('Outbound Call', 'Outbound Email') THEN 1 ELSE 0 END) = 1 AS has_outbound
+        MAX(CASE WHEN interaction_type IN ('Outbound Call', 'Outbound Email') THEN 1 ELSE 0 END) = 1 AS has_outbound,
+        MAX(CASE WHEN is_internal_did = TRUE THEN 1 ELSE 0 END) = 1 AS has_internal
       FROM \`${DS}.lead_timeline\` GROUP BY opportunity_id
     ) ob ON o.opportunity_id = ob.opportunity_id
     LEFT JOIN (SELECT DISTINCT opportunity_id, contact_name, channel, service, suburb
       FROM \`${DS}.vw_lead_enriched\`) le ON o.opportunity_id = le.opportunity_id
     LEFT JOIN (
       SELECT opportunity_id,
-        STRING_AGG(
-          CONCAT('[', CAST(interaction_datetime AS STRING), '] ',
-            COALESCE(interaction_type, 'Unknown'),
-            CASE WHEN full_content IS NOT NULL AND full_content != ''
-              THEN CONCAT('\\n', full_content) ELSE ' (no content)' END),
-          '\\n---\\n' ORDER BY interaction_datetime
+        -- Timeline: interaction touches + job-side content folded in as labelled rows.
+        -- Job content (task_description, labour_notes, task_notes) is appended after
+        -- the chronological touches, labelled by source. Same narrative shape the
+        -- validated prompt reads — no template change needed.
+        CONCAT(
+          STRING_AGG(
+            CONCAT('[', CAST(interaction_datetime AS STRING), '] ',
+              COALESCE(interaction_type, 'Unknown'),
+              COALESCE(CONCAT(' | ', interaction_operator), ''),
+              CASE WHEN interaction_duration_seconds IS NOT NULL
+                THEN CONCAT(' | ', CAST(CAST(interaction_duration_seconds/60 AS INT64) AS STRING), 'm',
+                     CAST(MOD(CAST(interaction_duration_seconds AS INT64), 60) AS STRING), 's') ELSE '' END,
+              CASE WHEN full_content IS NOT NULL AND full_content != ''
+                THEN CONCAT('\\n', full_content) ELSE ' (no content)' END),
+            '\\n---\\n' ORDER BY interaction_datetime
+          ),
+          -- Append job-side content as labelled sections (if present)
+          CASE WHEN MAX(task_description) IS NOT NULL AND MAX(task_description) != ''
+            THEN CONCAT('\\n---\\nJOB DESCRIPTION:\\n', MAX(task_description)) ELSE '' END,
+          CASE WHEN MAX(labour_notes) IS NOT NULL AND MAX(labour_notes) != ''
+            THEN CONCAT('\\n---\\nTECH LABOUR NOTE:\\n', MAX(labour_notes)) ELSE '' END,
+          CASE WHEN MAX(task_notes) IS NOT NULL AND MAX(task_notes) != ''
+            THEN CONCAT('\\n---\\nTASK NOTES:\\n', MAX(task_notes)) ELSE '' END
         ) AS full_timeline,
-        SUM(LENGTH(COALESCE(full_content, ''))) AS total_content_chars
+        SUM(LENGTH(COALESCE(full_content, '')))
+          + LENGTH(COALESCE(MAX(task_description), ''))
+          + LENGTH(COALESCE(MAX(labour_notes), ''))
+          + LENGTH(COALESCE(MAX(task_notes), ''))
+          AS total_content_chars
       FROM \`${DS}.lead_timeline\` GROUP BY opportunity_id
     ) lt_agg ON o.opportunity_id = lt_agg.opportunity_id
     WHERE g.gate_stage IN ('judgement:NQ/NB', 'judgement:Booked:completed_zero')
+      AND o.opportunity_id NOT IN (
+        SELECT ac.opportunity_id FROM \`${DS}.crm_auto_classifications\` ac
+        WHERE ac.action = 'system_miss'
+      )
     ORDER BY o.opportunity_id
   `)
 

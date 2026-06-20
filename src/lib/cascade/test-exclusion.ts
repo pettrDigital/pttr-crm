@@ -40,11 +40,15 @@ export function testExclusionWhereClause(aleAlias: string, ds: string): string {
     .map(e => `'${e}'`)
     .join(', ')
 
-  return `(
+  // COALESCE to FALSE: when the LEFT JOIN to ALE produces no row (NULL for
+  // all fields), the lead is NOT excluded. Without this, NOT (NULL OR ...) = NULL
+  // = falsy, silently dropping real customer leads with no enriched row.
+  return `COALESCE(
     ${aleAlias}.is_test_lead = TRUE
     OR ${aleAlias}.lead_id IN (SELECT wc_lead_id FROM \`${ds}.test_wc_leads\`)
     OR ${aleAlias}.norm_contact_phone IN (SELECT phone_e164 FROM \`${ds}.test_numbers\`)
     OR ${aleAlias}.norm_phone IN (SELECT phone_e164 FROM \`${ds}.test_numbers\`)
-    OR LOWER(COALESCE(${aleAlias}.contact_email_address, '')) IN (${emailList})
+    OR LOWER(COALESCE(${aleAlias}.contact_email_address, '')) IN (${emailList}),
+    FALSE
   )`
 }

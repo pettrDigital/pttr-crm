@@ -112,3 +112,52 @@ export function mapCsvLeadsToOpportunities(
 
   return { leads, trail }
 }
+
+/**
+ * Generate a SQL CTE that produces the reconciliation_1215 mapped opp_ids.
+ * Same 3-way join logic as mapCsvLeadsToOpportunities (primary > array > phone),
+ * deduped to one opp per CSV lead, test-excluded leads removed.
+ *
+ * Returns a CTE named `recon_mapped_opps` with a single column `opp_id`.
+ * Callers use: `JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id`
+ *
+ * This is the SQL equivalent of the TypeScript function above — one source
+ * of truth for the join logic, two execution contexts (TS for unit tests,
+ * SQL for BQ queries).
+ */
+export function reconMappedOppsCTE(ds: string): string {
+  // Import the test exclusion SQL fragment
+  const { testExclusionWhereClause } = require('./test-exclusion')
+  const excludeClause = testExclusionWhereClause('ale', ds)
+
+  return `recon_mapped_opps AS (
+    SELECT DISTINCT opp_id FROM (
+      SELECT csv_lead_id, opp_id,
+        ROW_NUMBER() OVER (PARTITION BY csv_lead_id ORDER BY priority, opp_id) AS rn
+      FROM (
+        -- Priority 1: primary wc_lead_id
+        SELECT f.wc_lead_id AS csv_lead_id, o.opportunity_id AS opp_id, 1 AS priority
+        FROM \`${ds}.ferg_csv_classifications\` f
+        JOIN \`${ds}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+        WHERE NOT ${excludeClause}
+        UNION ALL
+        -- Priority 2: wc_leads array membership
+        SELECT f.wc_lead_id, al.opportunity_id, 2
+        FROM \`${ds}.ferg_csv_classifications\` f
+        JOIN (SELECT DISTINCT o2.opportunity_id, wl.wc_lead_id
+              FROM \`${ds}.opportunities\` o2, UNNEST(o2.wc_leads) wl) al
+          ON f.wc_lead_id = al.wc_lead_id
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+        WHERE NOT ${excludeClause}
+        UNION ALL
+        -- Priority 3: phone E.164 fallback
+        SELECT f.wc_lead_id, o.opportunity_id, 3
+        FROM \`${ds}.ferg_csv_classifications\` f
+        JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+        JOIN \`${ds}.opportunities\` o ON ale.norm_phone IS NOT NULL AND ale.norm_phone = o.phone
+        WHERE NOT ${excludeClause}
+      )
+    ) WHERE rn = 1
+  )`
+}
