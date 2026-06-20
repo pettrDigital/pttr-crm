@@ -23,6 +23,8 @@ import { BigQuery } from '@google-cloud/bigquery'
 import * as fs from 'fs'
 import * as path from 'path'
 import { SUB_STATUS_TO_STAGE, assertValidLeaf } from '../src/lib/classifier/taxonomy'
+import { validateT72Rationale, validateT71Rationale } from '../src/lib/cascade/rationale'
+import type { T72Rationale, T71Rationale } from '../src/lib/cascade/rationale'
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const PROJECT_ID = 'pttr-taskdata'
@@ -454,6 +456,11 @@ async function step8_writeClassifications(): Promise<void> {
       confidence FLOAT64,
       reasoning STRING,
       source_quote STRING,
+      rationale STRING,
+      jobnumber STRING,
+      run_id STRING,
+      has_outbound BOOL,
+      has_internal_touch BOOL,
       is_auto BOOL DEFAULT TRUE,
       action STRING DEFAULT 'proposed',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
@@ -461,11 +468,24 @@ async function step8_writeClassifications(): Promise<void> {
     )
   `)
 
-  // Validate every verdict's sub_status against the canonical taxonomy.
-  // If T7.2 emitted an off-taxonomy string, HALT — better than writing bad data.
+  // Validate every verdict: sub_status against taxonomy + rationale shape.
+  // If T7.2 emitted an off-taxonomy string or malformed rationale, HALT.
   // Whitelist action='system_miss' (orphan flag) — not a sub_status.
   for (const v of verdicts) {
-    if (v.action === 'system_miss') continue
+    if (v.action === 'system_miss') {
+      // Orphan rows: validate T7.1 rationale shape if present
+      if (v.rationale) {
+        try {
+          validateT71Rationale(typeof v.rationale === 'string' ? JSON.parse(v.rationale) : v.rationale)
+        } catch (e) {
+          throw new Error(
+            `HALT: T7.1 rationale validation failed for ${v.opportunity_id}: ${(e as Error).message}`
+          )
+        }
+      }
+      continue
+    }
+    // T7.2: validate sub_status
     try {
       assertValidLeaf(v.sub_status)
     } catch (e) {
@@ -475,14 +495,37 @@ async function step8_writeClassifications(): Promise<void> {
         `the leaf to taxonomy.ts. Error: ${(e as Error).message}`
       )
     }
+    // T7.2: validate rationale shape
+    if (!v.rationale) {
+      throw new Error(
+        `HALT: T7.2 verdict for ${v.opportunity_id} is missing rationale. ` +
+        `Every classification must have a structured rationale.`
+      )
+    }
+    try {
+      const parsed = typeof v.rationale === 'string' ? JSON.parse(v.rationale) : v.rationale
+      const validated = validateT72Rationale(parsed)
+      // Cross-check: rationale.chosen must match verdict.sub_status
+      if (validated.chosen !== v.sub_status) {
+        throw new Error(
+          `HALT: rationale.chosen "${validated.chosen}" does not match verdict.sub_status "${v.sub_status}"`
+        )
+      }
+    } catch (e) {
+      throw new Error(
+        `HALT: T7.2 rationale validation failed for ${v.opportunity_id}: ${(e as Error).message}`
+      )
+    }
   }
 
-  // Build VALUES from verdicts
+  // Build VALUES from verdicts — rationale written ATOMICALLY with the staging row
   if (verdicts.length > 0) {
+    const esc = (s: string | null | undefined) => s ? s.replace(/'/g, "\\'").replace(/\n/g, '\\n') : ''
     const values = verdicts.map((v: any) => {
       const stage = v.gate_stage?.includes('Booked') ? 'Booked' :
         (SUB_STATUS_TO_STAGE[v.sub_status] || 'Not Booked')
-      return `('${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${v.gate_stage}', '${(v.sub_status || '').replace(/'/g, "\\'")}', '${stage}', ${v.confidence || 0}, '${(v.reasoning || '').replace(/'/g, "\\'")}', ${v.source_quote ? `'${v.source_quote.replace(/'/g, "\\'")}'` : 'NULL'}, TRUE, 'proposed', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
+      const rationaleStr = typeof v.rationale === 'object' ? JSON.stringify(v.rationale) : (v.rationale || '')
+      return `('${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${v.gate_stage}', '${esc(v.sub_status)}', '${stage}', ${v.confidence || 0}, '${esc(v.reasoning)}', ${v.source_quote ? `'${esc(v.source_quote)}'` : 'NULL'}, '${esc(rationaleStr)}', ${v.jobnumber ? `'${v.jobnumber}'` : 'NULL'}, ${v.run_id ? `'${v.run_id}'` : 'NULL'}, ${v.has_outbound ?? 'NULL'}, ${v.has_internal_touch ?? 'NULL'}, TRUE, '${v.action || 'proposed'}', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
     }).join(',\n      ')
 
     await runScript(`
@@ -492,7 +535,10 @@ async function step8_writeClassifications(): Promise<void> {
       WHEN MATCHED THEN UPDATE SET
         sub_status = S.sub_status, stage = S.stage,
         confidence = S.confidence, reasoning = S.reasoning,
-        source_quote = S.source_quote, updated_at = CURRENT_TIMESTAMP()
+        source_quote = S.source_quote, rationale = S.rationale,
+        jobnumber = S.jobnumber, run_id = S.run_id,
+        has_outbound = S.has_outbound, has_internal_touch = S.has_internal_touch,
+        action = S.action, updated_at = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT ROW
     `)
     console.log(`  Written ${verdicts.length} classifications to crm_auto_classifications (staging)`)
