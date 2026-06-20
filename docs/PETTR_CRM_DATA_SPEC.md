@@ -1004,7 +1004,7 @@ Exclude these domains from PHONE_MATCH/EMAIL_MATCH precomputation in `t7_match_c
 
 - **Clustering window**: 24 leads / $42,829 orphaned by 30-day window across full population. Fix: widen to 45d or post-clustering phone-match pass.
 - **Known-staff-caller gap**: Donna Carey (1 phone, low priority).
-- **Linker-miss rate**: 6/1,095 (0.5%), $18,090. The system does NOT self-capture conversion-orphans on unattended runs.
+- **Linker-miss rate**: 6/1,095 (0.5%), **$10,993** invoiced (verified `vw_job_invoiced`): Liz Manfredini JN141144 $8,855; Fong Loretta JN141470 $880; Mark Ford JN140906 $466; John Gabor JN142371 $792; Aaron Simpson JN141307 $0; Michael Kilborn JN141935 $0. The system does NOT self-capture conversion-orphans on unattended runs.
 
 ---
 

@@ -180,16 +180,22 @@ as Spam from thin WC summary content. Needs manual review.
 ## 7. System-Missed Conversions (linker-miss rate)
 
 **6 of 1,095 mapped leads (0.5%) have real AroFlo jobs the linker failed
-to connect.** Total invoiced: **$18,090**.
+to connect.** Total invoiced: **$10,993** (verified from `vw_job_invoiced`).
 
-| Lead | Job | Client | Type | Invoiced | Miss class |
-|---|---|---|---|---|---|
-| Liz Manfredini | 141144 | Liz Manfredini | COD | $8,855 | Phone 31d beyond 30d window |
-| Aaron Simpson | 141593 | Strata Choice | Account | $5,412 | Content match, conflation guard |
-| Mark Ford | 141811 | B&D | Account | $1,817 | Content match, conflation guard (§17.1) |
-| John Gabor | 142576 | CGS FM | Account | $1,126 | Content match, 16d forward |
-| Fong Loretta | 141470 | Fong Loretta | COD | $880 | Phone 44d beyond 30d window |
-| Michael Kilborn | 141935 | Helen Roberts | COD | $0 | Content match, backward window |
+| Lead | Job | Client | Type | Invoiced | Miss class | Evidence |
+|---|---|---|---|---|---|---|
+| Liz Manfredini | 141144 | Liz Manfredini | COD | $8,855 | Phone 31d beyond 30d window | Same phone, only candidate |
+| Fong Loretta | 141470 | Fong Loretta | COD | $880 | Phone 44d beyond 30d window | Same phone, only candidate |
+| Mark Ford | 140906 | B&D | Account | $466 | Content match, conflation guard (S15.1) | Same-day, description: "Mark called...light fitting in common area" |
+| John Gabor | 142371 | Strata Partners | Account | $792 | Content match, 1d forward | Description: "John Gabor...2 blocked toilets" — matches his call |
+| Aaron Simpson | 141307 | Strata Choice | Account | $0 | Content match, 13d forward | Description: "Building Manager - Aaron Simpson" + quote request |
+| Michael Kilborn | 141935 | Helen Roberts | COD | $0 | Content match, backward window | Name+address in description, appointment confirmed |
+
+**Note**: Each building manager (Ford, Gabor, Simpson) has MULTIPLE jobs where
+their name appears. The jobs listed above are the ones directly related to the
+lead's specific call (matched by date proximity + problem description), not the
+highest-invoiced job on their name. The orphan scan must sort by date proximity,
+not invoiced amount, to avoid attributing unrelated jobs.
 
 **Fergus's classification of the 6 system-miss leads:**
 - 4 have Ferg reason `--` (Ferg didn't classify a non-conversion reason)
