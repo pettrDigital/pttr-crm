@@ -216,6 +216,13 @@ before T7.2 runs. T7.2 reads gate_stage to select the allowed set.
 **Why before Step 8**: classifications must be evaluated before writing.
 **Type**: AI SEAM
 
+**SEAM INTEGRITY (§17.1a)**: The classifier at this seam MUST be the
+validated T7.2 prompt-based model — reading each lead's full timeline,
+applying NQ_NB_SYSTEM_PROMPT or BOOKED_SYSTEM_PROMPT, with pre-pass
+constraints from Step 4. NEVER substitute a keyword/signal/BQ-CASE-WHEN
+shortcut. If volume requires batching (50 leads/batch), batch it. Do
+not invent an alternative classifier to avoid batching.
+
 ### Step 8: Write Classifications (STAGING)
 
 **Consumes**: T7.2 verdicts (from Step 7) + determined results (from

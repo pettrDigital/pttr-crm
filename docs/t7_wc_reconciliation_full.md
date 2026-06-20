@@ -2,10 +2,21 @@
 
 **Date**: 2026-06-20
 **Population**: 1,215 CSV leads (ferg_csv_classifications), all bucketed, zero unexplained
-**Engine**: T7.2 signal-based classification + gate-determined stages
+**Engine**: Gate-determined stages (476 leads, reliable) + BQ keyword-approximated
+classification (611 leads, NOT the validated T7.2 prompt model — see caveat below)
 **Comparison**: Fergus's after_* fields from classifyLead() LLM pipeline (NOT human labels)
 **Staging table**: `crm_auto_classifications` (action='proposed' or 'system_miss')
 **Reconciliation table**: `t7_reconcile_complete` (1,215 rows, one per CSV lead)
+
+**CAVEAT — CLASSIFIER SUBSTITUTION**: The 611 T7.2-labelled classifications were
+produced by a BQ keyword/signal extraction query, NOT by the validated T7.2
+prompt-based model (89.1% on 367 GT). The keyword patterns are too narrow —
+~121 leads defaulted to NFUR/CU when keywords didn't fire, instead of receiving
+the specific classification the full-timeline model would assign. The NQ/NB
+sub-status distribution is directionally correct but not validated. The gate-
+determined stages (476), system-miss flags (6), and population footing (1,215)
+are reliable. The NQ/NB sub-statuses need re-classification through the actual
+T7.2 model before the reconciliation is final. See §17.1a in CLAUDE.md.
 
 ---
 

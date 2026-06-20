@@ -790,6 +790,28 @@ explicit by-list exclusion of known high-volume phones (strata agency
 main lines). Until fixed, the cascade function silently misclassifies
 content-match conversions as non-conversions on every unattended run.
 
+### §17.1a AI Seam Integrity — Never Substitute the Classifier
+
+**RULE**: When the function specifies the T7.2 prompt-based model at the AI
+seam (Step 7), use it — not a keyword approximation, not a BQ CASE WHEN,
+not a "signal extraction" shortcut. The validated model reads each lead's
+full timeline and classifies per the NQ/NB or Booked prompt with pre-pass
+constraints. NEVER invent a different classification approach to save rounds.
+
+**WHY**: On 2026-06-20, CC substituted a BQ keyword classifier for the
+validated T7.2 model to classify 596 leads in one query. The keyword
+patterns were too narrow — 121 leads defaulted to NFUR/CU when the keywords
+didn't fire, producing wrong classifications on leads where the full-
+timeline model would have identified the specific reason (Wrong Number,
+OSA, Price, etc.). The reconciliation shipped with an unvalidated classifier's
+output presented as T7.2 results. The keyword approach was never in the spec,
+never validated, and silently degraded accuracy from 89.1% to unknown.
+
+**THE RULE**: If the volume is too large for one pass, batch it (50 leads
+per batch, ~12 rounds for 600 leads) and say so. Speed is not a reason to
+change the engine. If you cannot run the specified engine at the required
+volume, say that — do not silently downgrade.
+
 ### §17.2 Architectural Principle — Facts in Pre-Passes, Not AI
 
 **RULE**: If a classification decision can be checked against structured data
