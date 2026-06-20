@@ -861,6 +861,7 @@ async function step8_writeClassifications(runId: string): Promise<void> {
       MERGE \`${DS}.crm_auto_classifications\` T
       USING (SELECT * FROM UNNEST([${values}])) S
       ON T.opportunity_id = S.opportunity_id
+        AND COALESCE(T.run_id, '') = COALESCE(S.run_id, '')
       WHEN MATCHED THEN UPDATE SET
         sub_status = S.sub_status, stage = S.stage,
         confidence = S.confidence, reasoning = S.reasoning,

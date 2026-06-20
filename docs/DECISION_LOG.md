@@ -403,3 +403,19 @@ commit, file). State lives in the spec; this log records how it got there.
   confirmed after test cleanup).
 
 ---
+
+## 2026-06-20 — L3.7: MERGE-key bug fixed for run coexistence
+
+- DECISION: Step 8's MERGE ON clause changed from `T.opportunity_id = S.opportunity_id` to
+  `T.opportunity_id = S.opportunity_id AND COALESCE(T.run_id, '') = COALESCE(S.run_id, '')`.
+  Previously, multi-run on the same population overwrote prior rows — coexistence was
+  impossible. This silently overwrote L3 §3 data when tonight's cc_recon run landed.
+  Surfaced by Cowork's pre-run audit. COALESCE handles existing NULL run_id rows safely
+  without a schema migration.
+  → scripts/run-cascade.ts step8_writeClassifications
+
+- DONE: Dry-run verified — two runs with same opp_ids but different run_ids now coexist as
+  distinct rows. Re-running with same run_id is idempotent.
+  → commit 81ba295 (labour-note check), this commit (MERGE key fix)
+
+---
