@@ -58,6 +58,12 @@ Secrets (API keys, credentials) are stored in **GCP Secret Manager** -- referenc
 
 **THE RULE**: If the volume is too large for one pass, batch it (50 leads per batch, ~12 rounds for 600 leads) and say so. Speed is not a reason to change the engine. If you cannot run the specified engine at the required volume, say that -- do not silently downgrade.
 
+**EXTRAPOLATING A CLASSIFICATION ACROSS LEADS WITHOUT READING THEIR CONTENT IS A SUBSTITUTED ENGINE** (added 2026-06-20): Reading N leads, observing the dominant classification, then applying that classification to the remaining leads without reading their timelines is not "batching" -- it is a substituted engine. On 2026-06-20, CC read ~30 of 90 Booked labour notes, saw "Quote Only" dominate, and applied it to the remaining 60 unread. Two leads with EFT payments confirmed in their labour notes ($242 and $692) were misclassified as Quote Only -- $934 in revenue invisible to the reconciliation. The decisive signal for Booked leads lives in the TECH LABOUR NOTE (typically 200-500 chars). Skipping it is skipping the evidence.
+
+**BOOKED RATIONALE MUST QUOTE THE LABOUR NOTE**: For every judgement:Booked:completed_zero lead, the T72Rationale `timeline_summary` field MUST include the verbatim TECH LABOUR NOTE content (or its first 200 chars if longer). Generic summaries like "Attended site and provided quote" without quoting the actual note are evidence the note was never read. validateVerdict should reject Booked rationale where timeline_summary does not contain text from the labour note.
+
+**NO PARALLEL AGENTS FOR CLASSIFICATION**: Sub-agents are a substituted engine even if their prompts look identical. The validated 89.1% accuracy was measured against a single CC inference stream reading timelines sequentially. Parallel agents are unmeasured engines wearing the validated one's name. Classification must run in the main conversation thread, not delegated to background agents.
+
 ## How the Cascade Runs (classification flow)
 
 1. **Run Step 7:**

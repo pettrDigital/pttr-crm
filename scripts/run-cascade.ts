@@ -685,6 +685,42 @@ function validateVerdict(verdict: Record<string, unknown>, lead: LeadInput): T72
     )
   }
 
+  // Booked labour-note verbatim check: the rationale must reference
+  // actual content from this lead's TECH LABOUR NOTE. Extracts the
+  // note from full_timeline, then checks that at least one 12+ char
+  // substring appears verbatim in timeline_summary or decisive_signals.
+  // Ties validation to per-lead source data, not a keyword list.
+  if (isBooked && lead.full_timeline) {
+    const labourMatch = lead.full_timeline.match(/TECH LABOUR NOTE:\n([\s\S]*?)(?:\n---|\n\nTASK|$)/)
+    if (labourMatch) {
+      const labourNote = labourMatch[1].trim()
+      if (labourNote.length >= 12) {
+        const searchIn = [
+          rationale.timeline_summary,
+          ...rationale.decisive_signals,
+        ].join(' ')
+
+        let found = false
+        for (let i = 0; i <= labourNote.length - 12; i++) {
+          const fragment = labourNote.substring(i, i + 12)
+          if (searchIn.includes(fragment)) {
+            found = true
+            break
+          }
+        }
+
+        if (!found) {
+          throw new Error(
+            `HALT: Booked lead ${lead.opportunity_id} rationale does not reference ` +
+            `any verbatim content from its TECH LABOUR NOTE. Read the note and ` +
+            `include specific content in timeline_summary or decisive_signals. ` +
+            `Labour note starts: "${labourNote.slice(0, 80)}..."`
+          )
+        }
+      }
+    }
+  }
+
   return rationale
 }
 
