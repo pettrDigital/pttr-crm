@@ -58,11 +58,24 @@ Secrets (API keys, credentials) are stored in **GCP Secret Manager** -- referenc
 
 **THE RULE**: If the volume is too large for one pass, batch it (50 leads per batch, ~12 rounds for 600 leads) and say so. Speed is not a reason to change the engine. If you cannot run the specified engine at the required volume, say that -- do not silently downgrade.
 
+## Starting a New Session
+
+Read these docs IN THIS ORDER before doing any work:
+
+1. **`docs/PETTR_CRM_DATA_SPEC.md`** — the canonical spec. ALL requirements, architecture, settled decisions. Read S15 (settled decisions) and S16 (known gaps) first.
+2. **`docs/SESSION_HANDOFF.md`** — current status. What's built, what's pending, what's next.
+3. **`docs/t7_wc_reconciliation_full.md`** — latest reconciliation output (reference, not requirements).
+4. **This file** — behavioral rules for CC.
+
+Do NOT re-derive anything in S15. Do NOT substitute classifiers (see AI Seam Integrity above). Read before building.
+
 ## Key Paths
 
 | File | Purpose |
 |---|---|
 | `docs/PETTR_CRM_DATA_SPEC.md` | **Canonical** requirements spec (S0-S18) |
+| `docs/SESSION_HANDOFF.md` | Current status snapshot (what's built/pending) |
+| `docs/t7_wc_reconciliation_full.md` | WC reconciliation output (1,215 leads footed) |
 | `docs/END_TO_END_FUNCTION.md` | Cascade function detailed sub-spec |
 | `bigquery/vw_leads_unified.sql` | Deployed spine (call + form + email) |
 | `bigquery/vw_lead_enriched.sql` | Deployed lean read surface + revenue model (v4) |
