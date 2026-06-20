@@ -961,7 +961,49 @@ These decisions were validated with evidence. They are STANDING RULES. Do not re
 - **Pre-passes**: CU/NFUR (`has_outbound`), NJR (`has_internal_touch`), payment regex (Booked:$0) -- currently disabled (S4.2).
 - **Content**: full uncapped (`formatClassifierPromptFull`). Capped version (`formatClassifierPrompt`) is API-only -- drops deciding signals on 2 of 4 tested hard cases.
 - **Confidence routing**: >=0.70 auto-classify (95.2% accuracy on 84.5% of leads), <0.70 human review (15.5% of leads).
-- **Measured**: 89.1% on 367 GT. See `t7_taxonomy_spec.md S10`.
+
+**Measured accuracy** (GT: `t7_ground_truth_rg006`, 367 scorable NQ/NB):
+
+**Overall: 327/367 = 89.1%** -- measured 2026-06-18, CC-as-classifier, no API.
+
+| GT Label | Correct | Total | Accuracy | Notes |
+|---|---|---|---|---|
+| Spam | 104 | 108 | 96.3% | Includes apprentice->Spam |
+| CU (has_outbound=TRUE) | 53 | 55 | 96.4% | |
+| CU (has_outbound=FALSE -> NFUR) | 41 | 44 | 93.2% | Pre-pass enforced |
+| Service Not Provided | 57 | 74 | 77.0% | Recovered from 28% under layered |
+| Wrong Number | 11 | 11 | 100% | PROVISIONAL (n=11) |
+| Tenant / Strata Referral | 15 | 20 | 75.0% | |
+| Price / Minimum Call Out | 15 | 18 | 83.3% | |
+| Capacity / Scheduling | 16 | 16 | 100% | PROVISIONAL (n=16) |
+| Wanted Quote Over Phone | 9 | 10 | 90.0% | PROVISIONAL (n=10) |
+| Customer Resolved | 7 | 8 | 87.5% | PROVISIONAL (n=8) |
+| Outside Service Area | 8 | 8 | 100% | PROVISIONAL (n=8) |
+
+PROVISIONAL = small sample (n<20). Tier assignment by confidence routing, not headline accuracy on small n.
+
+**Confidence calibration** (well-ordered, monotonic):
+
+| Band | Correct | Total | Accuracy |
+|---|---|---|---|
+| 0.90+ | 195 | 199 | 98.0% |
+| 0.80-0.89 | 60 | 63 | 95.2% |
+| 0.70-0.79 | 40 | 48 | 83.3% |
+| 0.60-0.69 | 26 | 42 | 61.9% |
+| 0.50-0.59 | 6 | 15 | 40.0% |
+
+**Production routing** (confidence-first):
+
+| Confidence | Action | Leads | Accuracy |
+|---|---|---|---|
+| >= 0.70 | Auto-classify | 310 (84.5%) | 95.2% |
+| < 0.70 | Human review | 57 (15.5%) | -- |
+
+**T7 allowed outputs by gate**:
+- Booked (JN, $0): Job Pending, Booking Cancelled, Quote Only, Unable to Complete-Out of Scope, Completed-Invoice Pending
+- NQ/NB (no JN, content): Spam, Service Not Provided, Outside Service Area, Strata Issue, Customer Inquiry Only, Wrong Number, Not Job Related, Customer Unresponsive, Booked Elsewhere, Tenant/Strata Referral, Price/MCO, Capacity/Scheduling, Wanted Quote Over Phone, Customer Resolved, No Follow-Up Recorded, Other
+
+**SUB_STATUS_TO_STAGE map**: see `t7-classifier.ts`. Stage derived from sub-status, never the reverse. T7 picks sub-status; stage follows mechanically.
 
 **Failed experiment** (do not repeat): 3-layer prompt restructuring (c803de9) lowered overall accuracy and gutted SNP by making CU/NFUR a "residual" that uncertain leads dumped into. The pre-pass approach is architecturally superior.
 
