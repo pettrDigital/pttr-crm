@@ -319,8 +319,8 @@ the function around a specific trigger's constraints.
 - T7.2 output is validated by validateClassification(sub_status,
   allowedSet). If the AI returns a value outside the allowed set,
   it's flagged as VIOLATION (not written, routed to human review).
-- Confidence < 0.70 → routed to human review (per §10 of
-  t7_taxonomy_spec.md). Still written to staging, but marked
+- Confidence < 0.70 → routed to human review (per S15.3 of
+  PETTR_CRM_DATA_SPEC.md). Still written to staging, but marked
   low-confidence.
 
 ## 4. Readout Format
