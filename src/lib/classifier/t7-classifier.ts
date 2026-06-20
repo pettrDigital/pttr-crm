@@ -15,77 +15,16 @@
  * Input is RAW EVIDENCE only — no human work-product.
  */
 
-// ─── TAXONOMY (per t7_taxonomy_spec.md §7) ──────────────────────────────
+// ─── TAXONOMY (imported from canonical source — do NOT define leaves here) ──
+import {
+  SUB_STATUS_TO_STAGE,
+  BOOKED_ALLOWED,
+  NQ_NB_ALLOWED,
+  assertValidLeaf,
+} from './taxonomy'
 
-export const SUB_STATUS_TO_STAGE: Record<string, string> = {
-  // Not Captured (determined, no T7)
-  'Unanswered Call': 'Not Captured',
-  'Dropped Call': 'Not Captured',
-  'Technical Error': 'Not Captured',
-
-  // Unable to Classify (determined, no T7)
-  'Unable to Classify': 'Unable to Classify',
-
-  // Not Quotable (T7 judgement)
-  'Spam': 'Not Quotable',
-  'Service Not Provided': 'Not Quotable',
-  'Outside Service Area': 'Not Quotable',
-  'Strata Issue': 'Not Quotable',
-  'Customer Inquiry Only': 'Not Quotable',
-  'Wrong Number / Contact Details': 'Not Quotable',
-  'Not Job Related': 'Not Quotable',
-  'Vodafone Orphan': 'Not Quotable',
-
-  // Not Booked (T7 judgement, no JN)
-  'Customer Unresponsive': 'Not Booked',
-  'Booked Elsewhere': 'Not Booked',
-  'Tenant / Strata Referral': 'Not Booked',
-  'Price / Minimum Call Out': 'Not Booked',
-  'Capacity / Scheduling': 'Not Booked',
-  'Wanted Quote Over Phone': 'Not Booked',
-  'Customer Resolved': 'Not Booked',
-  'No Follow-Up Recorded': 'Not Booked',
-  'Other': 'Not Booked',
-
-  // Booked (fence: JN exists)
-  'Completed and Invoiced': 'Booked',      // determined: invoiced > 0
-  'Completed - Invoice Pending': 'Booked', // T7 judgement
-  'Job Pending': 'Booked',
-  'Booking Cancelled': 'Booked',
-  'Quote Only': 'Booked',
-  'Unable to Complete Job - Out of Scope': 'Booked',
-}
-
-// ─── ALLOWED SETS (per gate_stage) ──────────────────────────────────────
-
-export const BOOKED_ALLOWED = [
-  'Completed - Invoice Pending',
-  'Quote Only',
-  'Booking Cancelled',
-  'Unable to Complete Job - Out of Scope',
-  'Job Pending',
-] as const
-
-export const NQ_NB_ALLOWED = [
-  // Not Quotable
-  'Spam',
-  'Service Not Provided',
-  'Outside Service Area',
-  'Strata Issue',
-  'Customer Inquiry Only',
-  'Wrong Number / Contact Details',
-  'Not Job Related',
-  // Not Booked
-  'Customer Unresponsive',
-  'Booked Elsewhere',
-  'Tenant / Strata Referral',
-  'Price / Minimum Call Out',
-  'Capacity / Scheduling',
-  'Wanted Quote Over Phone',
-  'Customer Resolved',
-  'No Follow-Up Recorded',
-  'Other',
-] as const
+// Re-export so existing consumers don't break
+export { SUB_STATUS_TO_STAGE, BOOKED_ALLOWED, NQ_NB_ALLOWED, assertValidLeaf }
 
 // CU/NFUR deterministic pre-pass: when NO logged outbound (Outbound Call /
 // Outbound Email) exists in the timeline, CU is structurally impossible —
@@ -99,23 +38,21 @@ export const NQ_NB_ALLOWED = [
 // (visible attempt = CU-eligible). Only complete absence = force NFUR.
 export const NQ_NB_ALLOWED_NO_OUTBOUND = NQ_NB_ALLOWED.filter(
   s => s !== 'Customer Unresponsive'
-) as unknown as readonly string[]
+)
 
 // ─── SYSTEM PROMPTS ─────────────────────────────────────────────────────
+// Allowed-output blocks are GENERATED from taxonomy.ts via prompt-sections.ts.
+// Everything else (role text, decision rules, heuristics, output schema) is
+// hand-maintained here. Do NOT hand-edit the allowed-output enumeration —
+// change taxonomy.ts instead.
+
+import { buildBookedAllowedSection, buildNqNbAllowedSection } from './prompt-sections'
 
 export const BOOKED_SYSTEM_PROMPT = `You classify the WITHIN-BOOKED outcome of a trade services lead (plumbing/electrical, Sydney AU). The stage IS Booked — a job was created. Your task is to pick the correct sub-status. Return valid JSON only.
 
 Pick ONE sub_status from this CLOSED set (no other values are valid):
 
-1. "Completed - Invoice Pending" — Job attended, work done, money collected per tech notes (labour note mentions $X+gst card/eft/cash, task notes show work completed) — but no processed invoice in AroFlo yet. The work WAS done and paid for.
-
-2. "Quote Only" — We attended site and provided a quote, but the customer did not proceed with the work. Signals: labour note says "quote only", "not going ahead", "getting other quotes", "waste of time", "close off", or $0 collected. Distinct from Completed-Invoice Pending where money was collected.
-
-3. "Booking Cancelled" — Booking was cancelled for ANY reason BEFORE we attended or quoted. Customer cancelled via call/SMS, went with a competitor, was unresponsive to confirm, job resolved itself, or scheduling fell through. Includes "went elsewhere with a JN" pattern.
-
-4. "Unable to Complete Job - Out of Scope" — We attended site but couldn't provide the service. Requires different trade, structural issue, manufacturer issue, no RPZ valve, roofing work, needs strata plumbers, etc.
-
-5. "Job Pending" — Job is booked/scheduled but not yet attended. No site visit, no quote, no outcome yet. Use ONLY when no content indicates an outcome has occurred.
+${buildBookedAllowedSection()}
 
 DECISION RULES:
 - If labour note mentions money collected ($X+gst card/eft/cash/banked) AND work described → "Completed - Invoice Pending"
@@ -133,25 +70,7 @@ export const NQ_NB_SYSTEM_PROMPT = `You classify trade services leads (plumbing/
 
 Pick ONE sub_status from this CLOSED set. The funnel stage is DERIVED from your choice.
 
-NOT QUOTABLE (the enquiry itself is not actionable):
-- "Spam" — Unsolicited inbound that is not a customer seeking plumbing/electrical service. Includes: marketing/telemarketing/sales pitches, cleaning-service pitches, employment agencies, office-space offers, any external party trying to SELL TO PETTR. Also includes job-seekers and apprentice enquiries (people seeking employment/work placement/apprenticeships — they are not customers). Also includes callers from outside Australia (geographic spam).
-- "Service Not Provided" — A genuine customer enquiry for something PETTR does not do (not plumbing or electrical). E.g. TV repair, locksmith, solar, appliance installation, air conditioning, roofing, gas fitting. The caller wants to buy, but we don't sell it.
-- "Outside Service Area" — Geographic: caller is within Australia but outside the Sydney/Greater Sydney service area. The service is something we do, but not where they are.
-- "Strata Issue" — The issue itself is a strata/body corporate responsibility, not a direct-to-homeowner job. The caller needs to go through their strata, and PETTR cannot take the job directly. Distinct from Tenant/Strata Referral (below) where the caller HAS a real plumbing/electrical problem but needs strata approval.
-- "Customer Inquiry Only" — An existing customer calling about an in-progress or recently completed job — not a new lead. Status check, warranty question, complaint about existing work, scheduling an already-booked return visit.
-- "Wrong Number / Contact Details" — Wrong number, disconnected, fax line, or invalid contact details. The lead cannot be reached or was never intended for PETTR.
-- "Not Job Related" — An INTERNAL/OPERATIONAL call ONLY: known staff member or DID marked [INTERNAL] discussing scheduling, inventory, HR, etc. NOT external callers of any kind — external sales pitches, job seekers, and apprentice enquiries are all "Spam" (unsolicited inbound). "Not Job Related" is reserved exclusively for identified internal staff communications.
-
-NOT BOOKED (the enquiry was real and quotable, but didn't convert to a booking):
-- "Customer Unresponsive" — We attempted to contact the customer and they did not respond. REQUIRES POSITIVE EVIDENCE: at least one VISIBLE, TRACKABLE outbound follow-up (call, SMS, or email) MUST appear in the timeline. Signal: outbound calls with short durations (0-10s = unanswered), voicemail left, SMS sent with no reply. If NO trackable outbound follow-up is visible in the timeline, use "No Follow-Up Recorded" instead. IMPORTANT: an after-hours OHQ/answering-service handoff does NOT qualify as visible outbound — the tech-mobile follow-up channel is untracked. OHQ leads with no trackable outbound → "No Follow-Up Recorded".
-- "Tenant / Strata Referral" — The caller is a tenant/resident who needs strata manager or property manager approval to proceed. They have a real problem (plumbing/electrical) but cannot authorise the work themselves. Distinct from Strata Issue (above) where the issue itself is strata's responsibility.
-- "Price / Minimum Call Out" — Customer declined due to pricing: minimum call-out fee too high, quoted price unfavourable, or price comparison. The service was quotable and in-area.
-- "Capacity / Scheduling" — PETTR couldn't accommodate the timeline (fully booked, too far out) OR customer's schedule didn't align. The issue is timing/availability, not price or scope.
-- "Wanted Quote Over Phone" — Customer wanted a price estimate over the phone without booking a site visit. The enquiry ended at the phone-quote stage.
-- "Customer Resolved" — The problem resolved on its own OR the customer fixed/handled it themselves, BEFORE any PETTR booking or site visit. Examples: Sydney Water fixed the main, blockage cleared, power came back, customer replaced a part themselves. No PETTR service was provided or needed.
-- "Booked Elsewhere" — Customer told us they chose a competitor BEFORE any job was created with us. They explicitly said they're going with someone else.
-- "No Follow-Up Recorded" — A valid enquiry where NO TRACKABLE outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE, not a cause. Do NOT assert operational failure from absence — it may be a data gap. Use when: no outbound calls/SMS/emails visible after the initial inbound touch. INCLUDES: after-hours OHQ/answering-service leads where the follow-up path is an untracked tech mobile — we cannot see whether contact was made, so the data state is "no follow-up recorded."
-- "Other" — Does not fit any defined category. Selecting this flags the lead for human review.
+${buildNqNbAllowedSection()}
 
 DECISION RULES:
 1. If the caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement → "Spam"
@@ -264,7 +183,7 @@ export function resolveGate(gate_stage: string): {
       determined: {
         opportunity_id: '',
         gate_stage: gate_stage as GateStage,
-        sub_status: 'account_billing_review',
+        sub_status: 'Account Billing Review',
         stage: 'Booked',
         confidence: 1.0,
         reasoning: 'Flagged: Archived + $0 + Account terms — manual review',

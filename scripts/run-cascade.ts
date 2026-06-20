@@ -22,6 +22,7 @@
 import { BigQuery } from '@google-cloud/bigquery'
 import * as fs from 'fs'
 import * as path from 'path'
+import { SUB_STATUS_TO_STAGE, assertValidLeaf } from '../src/lib/classifier/taxonomy'
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const PROJECT_ID = 'pttr-taskdata'
@@ -367,6 +368,8 @@ async function step6_writeMatches(): Promise<void> {
 }
 
 // ─── STEP 7: T7.2 CLASSIFY (AI SEAM) ───────────────────────────────
+// T7.2 prompt model only. No keyword/SQL/regex/BQ shortcut. If volume
+// requires batching, batch it (S15.1a). Do not invent an alternate classifier.
 async function step7_classify(prePasses: PrePassResult[]): Promise<string> {
   console.log('STEP 7: T7.2 CLASSIFY — assembling input...')
 
@@ -458,13 +461,27 @@ async function step8_writeClassifications(): Promise<void> {
     )
   `)
 
+  // Validate every verdict's sub_status against the canonical taxonomy.
+  // If T7.2 emitted an off-taxonomy string, HALT — better than writing bad data.
+  // Whitelist action='system_miss' (orphan flag) — not a sub_status.
+  for (const v of verdicts) {
+    if (v.action === 'system_miss') continue
+    try {
+      assertValidLeaf(v.sub_status)
+    } catch (e) {
+      throw new Error(
+        `HALT: T7.2 emitted off-taxonomy sub_status "${v.sub_status}" ` +
+        `for opportunity ${v.opportunity_id}. Fix the classifier or add ` +
+        `the leaf to taxonomy.ts. Error: ${(e as Error).message}`
+      )
+    }
+  }
+
   // Build VALUES from verdicts
   if (verdicts.length > 0) {
     const values = verdicts.map((v: any) => {
       const stage = v.gate_stage?.includes('Booked') ? 'Booked' :
-        ['Spam', 'Service Not Provided', 'Outside Service Area', 'Strata Issue',
-         'Customer Inquiry Only', 'Wrong Number / Contact Details', 'Not Job Related',
-         'Vodafone Orphan'].includes(v.sub_status) ? 'Not Quotable' : 'Not Booked'
+        (SUB_STATUS_TO_STAGE[v.sub_status] || 'Not Booked')
       return `('${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${v.gate_stage}', '${(v.sub_status || '').replace(/'/g, "\\'")}', '${stage}', ${v.confidence || 0}, '${(v.reasoning || '').replace(/'/g, "\\'")}', ${v.source_quote ? `'${v.source_quote.replace(/'/g, "\\'")}'` : 'NULL'}, TRUE, 'proposed', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
     }).join(',\n      ')
 
@@ -621,7 +638,7 @@ async function writeSnapshot(): Promise<void> {
         WHEN g.gate_stage = 'determined:Unable to Classify' THEN TRUE
         WHEN g.gate_stage = 'determined:Not Captured / Unanswered Call' THEN TRUE
         WHEN g.gate_stage = 'determined:Not Captured / Dropped Call' THEN TRUE
-        WHEN ac.confidence >= 0.90 AND ac.sub_status IN ('Spam', 'Wrong Number / Contact Details',
+        WHEN ac.confidence >= 0.90 AND ac.sub_status IN ('Spam', 'Wrong Number',
           'Outside Service Area', 'Service Not Provided') THEN TRUE
         ELSE FALSE
       END AS is_terminal

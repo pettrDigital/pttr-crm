@@ -2,6 +2,7 @@ import { getLeads } from '@/lib/bigquery/queries'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { adminDb } from '@/lib/firebase/admin'
 import { query } from '@/lib/bigquery/client'
+import { migrateLegacyLeaf } from '@/lib/classifier/taxonomy'
 
 export async function GET(request: Request) {
   try { await verifyAuth(request) } catch (e) { return e as Response }
@@ -176,18 +177,16 @@ export async function GET(request: Request) {
         : String(ov.pending_since),
     } : {}
 
-    // Auto-translate legacy values on read
-    let subStatus = ov.sub_status as string
+    // Auto-translate legacy values on read (canonical migration from taxonomy.ts)
+    let subStatus = migrateLegacyLeaf(ov.sub_status as string)
     let lossReason = ov.loss_reason as string | null
     let requiresCsrReview = ov.requires_csr_review as boolean || false
-    // CSR Failure → Customer Unresponsive + requires_csr_review
-    if (subStatus === 'CSR Failure' || lossReason === 'CSR Failure') {
-      subStatus = subStatus === 'CSR Failure' ? 'Customer Unresponsive' : subStatus
+    // CSR Failure → Customer Unresponsive + requires_csr_review (special: sets flag)
+    if ((ov.sub_status as string) === 'CSR Failure' || lossReason === 'CSR Failure') {
+      subStatus = (ov.sub_status as string) === 'CSR Failure' ? 'Customer Unresponsive' : subStatus
       lossReason = lossReason === 'CSR Failure' ? null : lossReason
       requiresCsrReview = true
     }
-    // Lost / Unresponsive → Customer Unresponsive
-    if (subStatus === 'Lost / Unresponsive') subStatus = 'Customer Unresponsive'
 
     // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true

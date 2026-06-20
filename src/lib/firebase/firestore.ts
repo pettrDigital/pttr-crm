@@ -11,6 +11,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from './client'
+import { migrateLegacyLeaf, assertValidLeaf } from '@/lib/classifier/taxonomy'
 
 // ─── CLASSIFICATION OVERRIDE ────────────────────────────────────────────────
 // One doc per opportunity. Keys on opportunity_id.
@@ -30,10 +31,13 @@ export async function setClassification(
   data: { stage: string; sub_status: string; loss_reason?: string | null; note?: string | null },
   updatedBy: string
 ) {
+  // Migrate legacy labels and validate against canonical taxonomy
+  const validSubStatus = assertValidLeaf(migrateLegacyLeaf(data.sub_status))
+
   return setDoc(doc(db, 'crm_lead_overrides', opportunityId), {
     opportunity_id: opportunityId,
     stage: data.stage,
-    sub_status: data.sub_status,
+    sub_status: validSubStatus,
     loss_reason: data.loss_reason || null,
     note: data.note || null,
     updated_by: updatedBy,

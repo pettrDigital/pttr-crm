@@ -11,9 +11,9 @@ const clientCategoryStyles: Record<string, string> = {
 }
 
 const funnelStageConfig: Record<string, { icon: LucideIcon; iconClass: string; textClass: string; label: string }> = {
-  'Paid Job':      { icon: CircleCheck, iconClass: 'text-green-600',  textClass: 'text-green-800',  label: 'Job Complete' },
+  'Paid Job':      { icon: CircleCheck, iconClass: 'text-green-600',  textClass: 'text-green-800',  label: 'Completed and Invoiced' },
   'Booked':        { icon: Clock,       iconClass: 'text-blue-600',   textClass: 'text-blue-800',   label: 'Booked' },
-  'Job Complete':  { icon: CircleCheck, iconClass: 'text-green-600',  textClass: 'text-green-800',  label: 'Job Complete' },
+  'Completed and Invoiced': { icon: CircleCheck, iconClass: 'text-green-600', textClass: 'text-green-800', label: 'Completed and Invoiced' },
   'Job Pending':   { icon: Clock,       iconClass: 'text-blue-600',   textClass: 'text-blue-800',   label: 'Job Pending' },
   'Captured':      { icon: Loader,      iconClass: 'text-yellow-600', textClass: 'text-yellow-800', label: 'New Lead' },
   'Not Captured':  { icon: PhoneOff,    iconClass: 'text-gray-400',   textClass: 'text-gray-600',   label: 'Not Captured' },

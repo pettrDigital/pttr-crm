@@ -3,67 +3,33 @@
 import { useState, useEffect } from 'react'
 import { authFetch } from '@/lib/auth/auth-fetch'
 import type { Lead } from '@/types/database'
+import { TAXONOMY as CANONICAL_TAXONOMY, LEGACY_MAP, migrateLegacyLeaf } from '@/lib/classifier/taxonomy'
+import type { Stage } from '@/lib/classifier/taxonomy'
 
-// ─── TAXONOMY ───────────────────────────────────────────────────────────────
+// ─── TAXONOMY (derived from canonical source — do NOT define leaves here) ────
 
-const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string }[] }[] = [
-  {
-    stage: 'Not Captured',
-    subStatuses: [
-      { label: 'Dropped Call', autoKey: 'dropped' },
-      { label: 'Unanswered Call', autoKey: 'unanswered' },
-      { label: 'Unable to Classify' },
-    ],
-  },
-  {
-    stage: 'Not Quotable',
-    subStatuses: [
-      { label: 'Outside Service Area' },
-      { label: 'Service Not Provided' },
-      { label: 'Strata Issue' },
-      { label: 'Spam' },
-      { label: 'Customer Inquiry Only' },
-      { label: 'Wrong Number / Contact Details' },
-      { label: 'Technical Error' },
-      { label: 'Not Job Related' },
-      { label: 'Vodafone Orphan' },
-    ],
-  },
-  {
-    stage: 'Pending',
-    subStatuses: [
-      { label: 'Pending' },
-    ],
-  },
-  {
-    stage: 'Not Booked',
-    subStatuses: [
-      { label: 'Customer Unresponsive' },
-      { label: 'Booked Elsewhere' },
-      { label: 'Tenant / Strata Referral' },
-      { label: 'Price / Minimum Call Out' },
-      { label: 'Capacity / Scheduling' },
-      { label: 'Wanted Quote Over Phone' },
-      { label: 'Customer Resolved' },
-      { label: 'PETTR Did Not Respond' },
-      { label: 'Other' },
-    ],
-  },
-  {
-    stage: 'Booked',
-    subStatuses: [
-      { label: 'Job Pending', autoKey: 'pending' },
-      { label: 'Job Complete', autoKey: 'complete' },
-      { label: 'Booking Cancelled' },
-      { label: 'Quote Only' },
-      { label: 'Unable to Complete Job - Out of Scope' },
-    ],
-  },
-]
+// UI display order for stages
+const STAGE_ORDER: Stage[] = ['Not Captured', 'Unable to Classify', 'Not Quotable', 'Pending', 'Not Booked', 'Booked']
 
-// Legacy value mapping — translate on display
+// Auto-detection keys for UI badge indicators
+const AUTO_KEYS: Record<string, string> = {
+  'Unanswered Call': 'unanswered',
+  'Dropped Call': 'dropped',
+  'Job Pending': 'pending',
+  'Completed and Invoiced': 'complete',
+}
+
+const TAXONOMY = STAGE_ORDER.map(stage => ({
+  stage,
+  subStatuses: CANONICAL_TAXONOMY
+    .filter(l => l.stage === stage)
+    .map(l => ({ label: l.name, autoKey: AUTO_KEYS[l.name] })),
+}))
+
+// Legacy value mapping — translate on display (imported from canonical source)
 const LEGACY_SUB_STATUS: Record<string, string> = {
-  'Lost / Unresponsive': 'Customer Unresponsive',
+  ...LEGACY_MAP,
+  // S4.8 legacy values (CSR Failure has special handling — requires_csr_review flag)
   'CSR Failure': 'Customer Unresponsive',
 }
 
@@ -71,7 +37,7 @@ const LEGACY_SUB_STATUS: Record<string, string> = {
 
 function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
   // Objective override: job linkage always wins
-  if (lead.completed) return { stage: 'Booked', sub_status: 'Job Complete' }
+  if (lead.completed) return { stage: 'Booked', sub_status: 'Completed and Invoiced' }
   if (lead.booking_status === 'Booked') return { stage: 'Booked', sub_status: 'Job Pending' }
   // After-hours gap: no WC, no OHQ email, no job, no 8x8 recording (validated 0% conversion)
   // ≥20s = engaged via answering service, no contact captured → Lost/Unresponsive
@@ -92,7 +58,7 @@ function isAutoItem(lead: Lead, stage: string, ss: string): boolean {
   if (stage === 'Not Captured' && ss === 'Unanswered Call') return !!(lead.lead_type === 'call' && !lead.answered)
   if (stage === 'Not Booked' && ss === 'Customer Unresponsive') return !!(lead.is_after_hours_gap && lead.captured)
   if (stage === 'Booked' && ss === 'Job Pending') return !!(lead.booking_status === 'Booked' && !lead.completed)
-  if (stage === 'Booked' && ss === 'Job Complete') return !!lead.completed
+  if (stage === 'Booked' && ss === 'Completed and Invoiced') return !!lead.completed
   return false
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { adminDb } from '@/lib/firebase/admin'
+import { migrateLegacyLeaf, isValidLeaf, ALL_LEAVES } from '@/lib/classifier/taxonomy'
 
 export async function POST(
   request: NextRequest,
@@ -44,18 +45,23 @@ export async function POST(
       return Response.json({ error: 'stage and sub_status required' }, { status: 400 })
     }
 
-    // Auto-translate legacy values on write
-    let finalSubStatus = sub_status
+    // Auto-translate legacy values on write (canonical migration from taxonomy.ts)
+    let finalSubStatus = migrateLegacyLeaf(sub_status)
     let finalLossReason = loss_reason
     let requiresCsrReview = false
-    // CSR Failure → Customer Unresponsive + requires_csr_review
+    // CSR Failure → Customer Unresponsive + requires_csr_review (special: sets flag)
     if (sub_status === 'CSR Failure' || loss_reason === 'CSR Failure') {
-      finalSubStatus = sub_status === 'CSR Failure' ? 'Customer Unresponsive' : sub_status
+      finalSubStatus = sub_status === 'CSR Failure' ? 'Customer Unresponsive' : finalSubStatus
       finalLossReason = loss_reason === 'CSR Failure' ? null : loss_reason
       requiresCsrReview = true
     }
-    // Lost / Unresponsive → Customer Unresponsive
-    if (finalSubStatus === 'Lost / Unresponsive') finalSubStatus = 'Customer Unresponsive'
+
+    // Validate: sub_status must be a canonical leaf after migration
+    if (!isValidLeaf(finalSubStatus)) {
+      return Response.json({
+        error: `Invalid sub_status: "${sub_status}" (migrated: "${finalSubStatus}"). Valid leaves: ${[...ALL_LEAVES].join(', ')}`,
+      }, { status: 400 })
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: Record<string, any> = {

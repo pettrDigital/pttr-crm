@@ -306,12 +306,43 @@ T7 reads full content (transcript + notes + form) and classifies WITHIN the gate
 
 ### S4.4 Taxonomy (current, locked)
 
-- **Not Captured** (determined): Unanswered Call, Dropped Call, Technical Error.
-- **Unable to Classify** (determined): touch exists, zero readable content. `exclude_from_analysis = TRUE`: removes lead from all funnel denominators and rate calculations.
-- **Not Quotable** (no JN): Spam, Service Not Provided, Outside Service Area, Strata Issue, Customer Inquiry Only, Wrong Number, Not Job Related.
-- **Not Booked** (no JN): Customer Unresponsive, No Follow-Up Recorded, Tenant/Strata Referral, Price/Minimum Call Out, Capacity/Scheduling, Wanted Quote Over Phone, Customer Resolved, Booked Elsewhere, Other.
-- **Pending**: Pending (with `pending_since` timestamp). Marks leads needing follow-up; converted from Firestore `_seconds` to ISO string at API read time.
-- **Booked** (JN): Completed and Invoiced, Completed-Invoice Pending, Quote Only, Booking Cancelled, Unable to Complete-Out of Scope, Job Pending, Job Complete (auto).
+<!-- TAXONOMY:BEGIN (generated from src/lib/classifier/taxonomy.ts — run scripts/render-taxonomy-md.ts; do not hand-edit) -->
+
+- **Not Captured**
+  - **Unanswered Call** (determined): Call was not answered; no other readable content. Determined from the CDR, not from transcript absence.
+  - **Dropped Call** (determined): Call was answered, then the line failed mid-exchange (reception failure); sole touch on the lead.
+- **Unable to Classify**
+  - **Unable to Classify** (determined): A touch exists but there is zero readable content. Excluded from funnel denominators.
+- **Not Quotable**
+  - **Spam** (T7 judgement): Unsolicited inbound that is not a customer seeking plumbing/electrical service. Includes: marketing/telemarketing/sales pitches, cleaning-service pitches, employment agencies, office-space offers, any external party trying to SELL TO PETTR. Also includes job-seekers and apprentice enquiries (people seeking employment/work placement/apprenticeships — they are not customers). Also includes callers from outside Australia (geographic spam).
+  - **Service Not Provided** (T7 judgement): A genuine customer enquiry for something PETTR does not do (not plumbing or electrical). E.g. TV repair, locksmith, solar, appliance installation, air conditioning, roofing, gas fitting. The caller wants to buy, but we don't sell it.
+  - **Outside Service Area** (T7 judgement): Geographic: caller is within Australia but outside the Sydney/Greater Sydney service area. The service is something we do, but not where they are.
+  - **Common Property Responsibility** (T7 judgement): The issue itself is a strata/body corporate responsibility, not a direct-to-homeowner job. The caller needs to go through their strata, and PETTR cannot take the job directly. Distinct from Tenant/Strata Referral (below) where the caller HAS a real plumbing/electrical problem but needs strata approval.
+  - **Customer Inquiry Only** (T7 judgement): An existing customer calling about an in-progress or recently completed job — not a new lead. Status check, warranty question, complaint about existing work, scheduling an already-booked return visit.
+  - **Wrong Number** (T7 judgement): Wrong number, disconnected, fax line, or invalid contact details. The lead cannot be reached or was never intended for PETTR.
+  - **Not Job Related** (T7 judgement): An INTERNAL/OPERATIONAL call ONLY: known staff member or DID marked [INTERNAL] discussing scheduling, inventory, HR, etc. NOT external callers of any kind — external sales pitches, job seekers, and apprentice enquiries are all "Spam" (unsolicited inbound). "Not Job Related" is reserved exclusively for identified internal staff communications.
+- **Not Booked**
+  - **Customer Unresponsive** (T7 judgement): We attempted to contact the customer and they did not respond. REQUIRES POSITIVE EVIDENCE: at least one VISIBLE, TRACKABLE outbound follow-up (call, SMS, or email) MUST appear in the timeline. Signal: outbound calls with short durations (0-10s = unanswered), voicemail left, SMS sent with no reply. If NO trackable outbound follow-up is visible in the timeline, use "No Follow-Up Recorded" instead. IMPORTANT: an after-hours OHQ/answering-service handoff does NOT qualify as visible outbound — the tech-mobile follow-up channel is untracked. OHQ leads with no trackable outbound -> "No Follow-Up Recorded".
+  - **No Follow-Up Recorded** (T7 judgement): A valid enquiry where NO TRACKABLE outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE, not a cause. Do NOT assert operational failure from absence — it may be a data gap. Use when: no outbound calls/SMS/emails visible after the initial inbound touch. INCLUDES: after-hours OHQ/answering-service leads where the follow-up path is an untracked tech mobile — we cannot see whether contact was made, so the data state is "no follow-up recorded."
+  - **Tenant / Strata Referral** (T7 judgement): The caller is a tenant/resident who needs strata manager or property manager approval to proceed. They have a real problem (plumbing/electrical) but cannot authorise the work themselves. Distinct from Common Property Responsibility (above) where the issue itself is strata's responsibility.
+  - **Price / Minimum Call Out** (T7 judgement): Customer declined due to pricing: minimum call-out fee too high, quoted price unfavourable, or price comparison. The service was quotable and in-area.
+  - **Capacity / Scheduling** (T7 judgement): PETTR couldn't accommodate the timeline (fully booked, too far out) OR customer's schedule didn't align. The issue is timing/availability, not price or scope.
+  - **Wanted Quote Over Phone** (T7 judgement): Customer wanted a price estimate over the phone without booking a site visit. The enquiry ended at the phone-quote stage.
+  - **Customer Resolved** (T7 judgement): The problem resolved on its own OR the customer fixed/handled it themselves, BEFORE any PETTR booking or site visit. Examples: Sydney Water fixed the main, blockage cleared, power came back, customer replaced a part themselves. No PETTR service was provided or needed.
+  - **Booked Elsewhere** (T7 judgement): Customer told us they chose a competitor BEFORE any job was created with us. They explicitly said they're going with someone else.
+  - **Other** (T7 judgement): Does not fit any defined category. Selecting this flags the lead for human review.
+- **Booked**
+  - **Completed and Invoiced** (determined): Job linked (JN) with invoiced_total_ex > 0.
+  - **Account Billing Review** (determined): Account/strata job archived at $0 invoiced. Billed via the Account arrangement, not the COD invoice flow, so $0 does not indicate cancellation — flag for Account billing check.
+  - **Completed - Invoice Pending** (gate + T7 judgement): Job attended, work done, money collected per tech notes (labour note mentions $X+gst card/eft/cash, task notes show work completed) — but no processed invoice in AroFlo yet. The work WAS done and paid for.
+  - **Quote Only** (gate + T7 judgement): We attended site and provided a quote, but the customer did not proceed with the work. Signals: labour note says "quote only", "not going ahead", "getting other quotes", "waste of time", "close off", or $0 collected. Distinct from Completed-Invoice Pending where money was collected.
+  - **Booking Cancelled** (gate + T7 judgement): Booking was cancelled for ANY reason BEFORE we attended or quoted. Customer cancelled via call/SMS, went with a competitor, was unresponsive to confirm, job resolved itself, or scheduling fell through. Includes "went elsewhere with a JN" pattern.
+  - **Job Pending** (gate + T7 judgement): Job is booked/scheduled but not yet attended. No site visit, no quote, no outcome yet. Use ONLY when no content indicates an outcome has occurred.
+  - **Unable to Complete Job - Out of Scope** (T7 judgement): We attended site but couldn't provide the service. Requires different trade, structural issue, manufacturer issue, no RPZ valve, roofing work, needs strata plumbers, etc.
+- **Pending**
+  - **Pending** (manual-only): A person has marked this lead as awaiting follow-up (records pending_since). Never AI-assigned.
+
+<!-- TAXONOMY:END -->
 
 Auto-detected sub-statuses (from BQ objective fields) are shown with a bullet indicator in the UI. Human overrides always replace auto-detection.
 
