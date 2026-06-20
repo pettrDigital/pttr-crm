@@ -30,7 +30,66 @@ system back to Ric — the spec already states it. Your job is to act on current
 
 ---
 
-## WHERE THINGS STAND (updated 2026-06-19)
+## WHERE THINGS STAND (updated 2026-06-20)
+
+### END-TO-END CASCADE FUNCTION — BUILT, FIRST RUN PARTIAL
+
+- **Built**: `scripts/run-cascade.ts` (committed b876f5a + 7a69084). 9 steps per
+  `docs/END_TO_END_FUNCTION.md` v2. Runs deterministic spine + AI seam (CC-mode),
+  writes to staging (`crm_auto_classifications`), never `crm_lead_overrides`.
+- **Dry-run**: inert (Step 4 read-only + Step 9 readout only).
+- **Step 6**: dynamic MERGE routes matches to Account/COD via AroFlo customer_type.
+- **First real run** (2026-06-20): ran `--scope=all` (full history, 22,619 opps).
+  Spine verified clean (Completed+Invoiced count exact to BQ).
+  - **T7.1** (Step 5): 101 signal leads evaluated → 0 matches (all structurally
+    correct abstains — Mark Ford conflation guard, Ian Johnston/Sam Girvan backward
+    window). Verified real, not a bug.
+  - **T7.2** (Step 7): paused mid-classification. 45 of 453 NQ/NB hand-classified
+    by CC. 106 Booked:completed_zero not yet started. See reconciliation doc.
+
+### WC RECONCILIATION — PARTIAL (1,057 leads mapped, ~551 classified/handled)
+
+- **Population**: 1,215 CSV → 116 test excluded → 1,057 mapped via 3-way join
+  (927 primary wc_lead_id + 128 wc_leads array + 2 phone fallback). Foots exactly.
+- **Classified**: 455 determined (gate) + 8 manually handled (orphans) + 37 hand-
+  classified NQ/NB + 2 Donna NJR = ~502 classified. 506 opps pending (444 NQ/NB +
+  94 Booked:completed_zero deduped).
+- **Materialised input**: `t7_recon_classify_input` BQ table has all 547 judgement
+  opps with full timelines + pre-pass facts. Classification can resume from this table.
+- **Full doc**: `docs/t7_wc_reconciliation_full.md` — honest partial state, not
+  projected counts.
+
+### THE KEY FINDING: AUTONOMY GAP (conversion-orphan classes)
+
+**The system does NOT self-capture conversion-orphans.** 6 real-job leads found
+during reconciliation, ALL by manual interception, NONE by the system. On every
+unattended run, the cascade function will misclassify real conversions as
+non-conversions. **This is the most important finding from this run.**
+
+4 orphan classes identified:
+
+1. **Content-match orphans** (4 leads found: Mark Ford $466, Michael Kilborn $0,
+   Aaron Simpson $0, John Gabor $792). Caller's name/address in Account job
+   description, different client phone. Phone-based scans cannot find these.
+   T7.1 has content_match signal but the conflation guard blocked Mark Ford.
+
+2. **Clustering-window orphans** (2 leads found + 24 across full population,
+   $42,829 total). 30-day window too tight for delayed bookings. Liz Manfredini
+   ($8,855 at 31d) and Fong Loretta ($880 at 44d). The 31-45d band recovers
+   6 invoiced leads ($16,698) with 60% precision.
+
+3. **Conflation-guard frequency bug** — LIVE §17.1 VIOLATION. The guard in
+   `t7_match_candidates.sql` excludes phones on 10+ Account descriptions.
+   This is a frequency-based heuristic, banned by §17.1 (the Aaron Rule).
+   Mark Ford was the proof: real $466 job blocked. The guard needs replacing
+   with an explicit by-list exclusion.
+
+4. **Known-staff-caller gap** (Donna Carey, 2 leads, $0). Dual-role person
+   (staff + customer). is_internal checks CALLED DID, not CALLER phone.
+   Needs a known_staff_callers mechanism. Low priority.
+
+All 6 linked leads written to crm_t7_match_queue or crm_account_exclusions
+with review_recommended=TRUE, needs_audit=TRUE. Pending rebuild to propagate.
 
 ### T7 — DONE, VALIDATED, DEPLOYED
 
@@ -38,12 +97,14 @@ system back to Ric — the spec already states it. Your job is to act on current
   review_recommended=TRUE on all. Candidate gen: hybrid mislabel buckets,
   signal-based eligibility, email contamination fixed, NAME/CONTENT/SUBURB
   MATCH pre-computed. Audit queue: `docs/t7_match_audit_queue.md`.
+  **RECALL GAP**: caught 0 of 6 real-job orphans in the first real run.
+  Content/name-match recall insufficient; conflation guard suppresses real PMs.
 
 - **T7.2 Classifier**: 89.1% on 367 GT. Config locked: flat prompt +
   CU/NFUR pre-pass + apprentice→Spam + NJR→internal + 0.70 conf routing.
   See `t7_taxonomy_spec.md §10`.
 
-- **T7.1→T7.2 Wiring**: deployed rev 00031/00032, 2× rebuild proven.
+- **T7.1→T7.2 Wiring**: deployed rev 00031/00032, 2x rebuild proven.
   JN propagation (Account §6 + COD post-graph UPDATE keyed wc_lead_id).
   13 matches live: 9 Completed+Invoiced ($6,907), 3 Booking Cancelled,
   1 Booked:$0. Dual booking rate: confirmed=819, total=829, delta=+10.
@@ -51,132 +112,122 @@ system back to Ric — the spec already states it. Your job is to act on current
 - **is_internal**: lkp_did_trade.is_internal → lead_timeline is_internal_did.
   resolveNqNbAllowedSet removes NJR when has_internal_touch=FALSE.
 
-### T7 — AWAITING
+### OUTSTANDING — AUTONOMY GAP (the real next priority)
 
-- **13 match audit**: review_recommended=TRUE. Review before clearing.
-- **WC reconciliation rebuild**: re-join at ~1,100 leads (phone+email
-  fallback), exclude 117 test leads, full per-lead table for Fergus.
-  928-lead version at `docs/t7_wc_reconciliation_full.md`.
+These are the gap between "hand-fixed reconciliation" and "correct unattended
+system." Until these are deterministic rules, the cascade function misclassifies
+real conversions on every run.
 
-### OUTSTANDING (non-T7)
+1. **Content-match candidate-gen signal** — T7.1 needs a content-match path for
+   leads where the caller's name/address appears in an Account job description
+   with a different client phone. Currently invisible to phone-based matching.
 
+2. **Replace conflation frequency-guard with by-list** per §17.1 — the 10+
+   description threshold in `t7_match_candidates.sql` is a frequency heuristic.
+   Replace with an explicit list of known high-volume phones (strata agency
+   main lines). The current guard is a live §17.1 violation.
+
+3. **Clustering-window widen-or-post-pass** — 24 leads/$42,829 orphaned by
+   the 30-day window across full population. Options: widen to 45d (best
+   signal:noise), or add a post-clustering phone-match pass for gap_based
+   leads. Measure false-merge risk before implementing.
+
+4. **Known-staff-caller mechanism** — separate from test_numbers (staff can
+   also be customers). Sets has_internal_touch=TRUE when CALLER phone is on
+   the list. Low priority (1 phone, 2 leads, $0).
+
+### OUTSTANDING — CARRIED ITEMS
+
+- T7.1 backward window: Ian Johnston (job -2d), Sam Girvan (job -76d, repeat).
+  Forward-only window misses jobs created just before the lead.
+- Step 6 seam JSON not §3-compliant (Cowork swap blocker)
+- Dual-classification metric view deferred (build before auto-output surfaced)
 - Payment regex false positives (fires on quotes, not collections)
 - Empty keyword_rules table (0 operational rules)
 - Garbled-call gate fix (content exists but meaningless)
-- Step 8: production engine + scheduler
-- vw_lead_enriched fanout (crm_account_exclusions dupes)
+- vw_lead_enriched fanout (crm_account_exclusions dupes — 1 known: Kira Dargin)
 - vw_accounts repoint (still uses banned task_invoices_total_ex)
-- 6 genuine WC spine gaps + 5 non-8x8 recording gaps
+- Finish classifying remaining 444 NQ/NB + 94 Booked:completed_zero
 
 ### DONE & committed (earlier sessions + this one)
-- **Lead interaction timeline (UI)** — calls + per-call transcripts, SMS, task-emails,
-  OHQ, WC forms, Outlook (Path A customer-email / B JN-anchored / C guarded subject-thread).
-  Verified on real leads, no blanking. Committed (commit d42293d bundled several fixes).
-- **Fixed & committed:** `wc_leads` silent-failure (was blanking ALL interactions);
-  leads search-by-ID (PH-/WC-/EM-/JN- + last-9-digit phone); per-call WC transcript
-  resolution (was showing cluster-primary's transcript on every call).
-- **Recording gap diagnosed (NOT a bug, spec §2.1):** ~25% of answered calls are
-  forwarded-to-mobile -> structurally unrecorded by 8x8 (per-extension recording bypassed).
-  ~75% capture, ~70% transcript coverage ceiling. Confirmed via direct 8x8 API (0/15 gap
-  calls exist) + 92.7% zero-leg correlation. **Implication: a call with no transcript is a
-  NORMAL touch (metadata only), not missing data / not an error.**
-- **WC reconciliation:** coverage sound (95.7% spine match; gaps were a norm_phone-vs-
-  contact_phone_number query artifact, not real misses). WC recordings/transcripts ARE
-  ingested. 1 genuine unmatched lead (Chris Kelsey $980 — a T7 content-match case).
+
+- **End-to-end cascade function** (`scripts/run-cascade.ts`, commits 7a69084 +
+  b876f5a). 9 steps, deterministic spine + AI seam. Dry-run inert. Step 6
+  dynamic MERGE. Writes to staging table, never crm_lead_overrides.
+- **Lead interaction timeline (UI)** — calls + per-call transcripts, SMS,
+  task-emails, OHQ, WC forms, Outlook (3 paths). Verified, committed.
+- **Recording gap diagnosed** — ~25% mobile-forwarded, ~75% capture ceiling.
+- **WC reconciliation population** — 1,057 leads, 3-way join, foots to 1,215.
+  `t7_recon_classify_input` materialised with full timelines.
+- **6 orphan fixes** — written to crm_t7_match_queue / crm_account_exclusions
+  with review_recommended=TRUE. Pending rebuild to propagate.
+- **Clustering-window finding** — 24 leads/$42,829 sized across full population.
+  Window-band analysis (31-45d/46-60d/61-100d) with precision metrics.
 
 ### HALF-BUILT (the dangerous category — looks done, isn't)
-- **§5.1 Account / SMS-resident-phone link tier.** Wrote the EXCLUSION FLAGS (232 opps
-  stamped `auto:sms_jn_tier` in `crm_account_exclusions`) but **NOT the job links**
-  (`jobnumber=NULL` on all 232). Leads are out of COD metrics but not matched to their
-  Account jobs / not showing true outcome. **Resolution is DECIDED** (spec §5.1, 3 constraints:
-  unique caller phone only / 30-day forward window / flag is_account+exclude). Remaining =
-  write the links by rule. **Highest-$ item: 977 leads / $6.1M.**
-- **"Build A" (this session, UNCOMMITTED):** changes to `build_lead_timeline.sql` +
-  `t7-classifier.ts` that materialised full content (SMS/OHQ/Outlook/task-email bodies,
-  ALL labour lines, ALL task-note authors) into `lead_timeline`, and renamed Missed->
-  Unanswered. **Table was rebuilt for verification but NOT committed, NOT deployed, UI
-  regression NOT checked.** Critical nuance: the **CC-as-classifier** path (free, used for
-  validation) reads these new materialised columns; the **production `classify.ts`** path
-  does NOT — it still hydrates at runtime with `LIMIT 1`/`LIMIT 5` (first-touch-only).
-  See "two channels" below.
+
+- **§5.1 Account / SMS-resident-phone link tier.** Exclusion flags written
+  (232 opps) but NOT job links (jobnumber=NULL on all 232). Leads are out of
+  COD metrics but not matched to Account jobs. **Highest-$ item: 977 leads / $6.1M.**
+- **"Build A"** (materialised full content into lead_timeline, renamed Missed→
+  Unanswered). Table rebuilt for verification but NOT committed, NOT deployed,
+  UI regression NOT checked. CC-as-classifier reads new columns; production
+  classify.ts does NOT.
 
 ### NOT BUILT
-- **§2.6 Correspondence coverage hole (3 leaks, one fix) — NEW this session, see spec §2.6:**
-  we harvest the `jobs@` mailbox SHADOW, not the authoritative sources. Missing:
-  (1) outbound SMS with no reply (MessageMedia only emails on reply) — needs MessageMedia
-  reporting API; (2) staff emails sent from non-`jobs@` mailboxes; (3) **AroFlo's own
-  email/SMS task entries baked into the job** — UNTESTED whether `join=notes`/another
-  endpoint exposes them (CC said "can't call the API" — it CAN; Postman + creds exist).
-  Breaks §4.3 Customer-Unresponsive evidence; under-ingests outcome-altering content.
-- **§5 JN-from-email-body tier** — "Handled JN#XXXXXX" in email/note bodies ->
-  deterministic link. 316/507 task emails carry an extractable JN. Specced (§5 family),
-  not built. (NOTE: this was dropped from an earlier spec rev — confirm it's now captured.)
-- **T7 production wiring** — proposal queue (`action='proposed'`), confirm/reject UI,
-  scheduler, residual feed. T7 is PROPOSE-only, never auto-link.
-- **T1–T3 deterministic tiers ARE live** (spec §5). T4 retired (0 matches). T5/T6
-  proposal-only, likely superseded by T7.
+
+- §2.6 Correspondence coverage hole (3 leaks)
+- §5 JN-from-email-body tier (316/507 task emails carry extractable JN)
+- T7 production wiring (proposal queue, confirm/reject UI, scheduler)
 
 ### SETTLED FACTS (don't re-investigate)
-- `join=tasknotes` ingest WORKS (107,378 notes / 23,876 jobs). The earlier "probe returned
-  empty" was a malformed enumeration probe, NOT a broken ingest. Open piece is ONLY whether
-  a different join exposes AroFlo email-type entries (part of §2.6 #3).
-- SMS reaches us as MessageMedia REPLY-notification emails into `raw_emails_received`
-  (`from_email LIKE %message-media%`). AroFlo task emails = `raw_emails_sent` to the AroFlo
-  task address. Both are subsets of the existing `jobs@` Outlook ingest — NOT new API pulls.
+
+- `join=tasknotes` ingest WORKS (107,378 notes / 23,876 jobs)
+- SMS reaches us as MessageMedia reply-notification emails
+- AroFlo task emails = raw_emails_sent to the AroFlo task address
 
 ---
 
 ## WHAT T7 IS (so it's never re-derived)
-T7 does **BOTH** from one content read: (1) **MATCH** — proposes which job an opp links to;
-(2) **CLASSIFY** — proposes funnel sub-status (spec §4 taxonomy). PROPOSE-only, human/audit
-above it. It is the **bottom rung** of the §5 cascade — runs on the RESIDUE the deterministic
-tiers can't link. Validated 65/65 blind on the OLD narrow input — **that validation is
-INVALID once input changes** (Build A changes it).
+
+T7 does **BOTH** from one content read: (1) **MATCH** — proposes which job an opp
+links to; (2) **CLASSIFY** — proposes funnel sub-status (spec §4 taxonomy).
+PROPOSE-only, human/audit above it. Bottom rung of §5 cascade — runs on RESIDUE.
 
 ### Two channels (the cost model — not two systems)
-- **CC-as-classifier** = free (Ric's Claude Code plan). Used NOW for dev + blind validation.
-  Reads the materialised `lead_timeline` columns (incl. Build A's full content).
-- **Production `classify.ts`** = paid OpenAI calls, scheduled daily. Wired LAST, only once
-  the model is proven. Currently still truncates (LIMIT 1/5) at runtime.
-- **Rule: validate the EXACT input production will run on.** Before flipping to the paid
-  channel, `classify.ts` must read the SAME full input the CC channel validated on, or the
-  validation doesn't transfer. **For now: disregard production — prove the model on the free
-  channel first.**
+- **CC-as-classifier** = free (Ric's Claude Code plan). Used NOW for dev + validation.
+- **Production `classify.ts`** = paid OpenAI calls, wired LAST once proven.
+- **Rule: validate the EXACT input production will run on.**
 
-### Circularity guard (per output — validation integrity)
-When you re-validate, **withhold whatever output is being graded:** for MATCH, withhold the
-confirmed JN / `manual_job_number` / `linked_jobs`; for CLASSIFY, withhold the confirmed
-sub-status override. Feeding T7 a human-confirmed answer = circular. (Spec §2.5 already HELDs
-WC's AI fields for the same reason.) Overrides are applied in the API route, not baked into
-the BQ tables `classify.ts` reads — so confirm the input path stays clean.
+### Circularity guard
+Withhold whatever output is being graded. Overrides applied in API route, not
+baked into BQ tables.
 
 ---
 
-## RECOMMENDED NEXT STEP (Ric to confirm)
-The spec is now locked & accurate. The unblocking move is **one read-only verification**, not
-a build: **make the live AroFlo API call** (Postman collection at
-`/Users/ricgordon/pettr-data/AroFlo API.postman_collection.json`, creds exist) for a
-known-correspondence job (e.g. **JN141987**) and report what correspondence AroFlo actually
-exposes and via which join/endpoint. That answer decides the build order between §2.6
-(correspondence ingest) and §5.1 (Account link tier — highest-$, half-built, deterministic).
-Do NOT build before that read-only answer. Do NOT let CC say "can't call the API" without
-trying the Postman request.
+## RECOMMENDED NEXT STEP
 
-## Parked (spec §10 has the full list) — do not touch
-Dashboard booking-rate denominator (known wrong). Job-view interaction timeline (later, shared
-component). vw_accounts repoint. Recording-ingest retry-on-500. Credit-note "other" typing.
-Doc number drift (0/20 vs 0/15; §16 figures) — flagged, reconcile later.
+**Close the autonomy gap** — make the 4 orphan classes self-capturing:
+1. Replace conflation frequency-guard with by-list (§17.1 enforcement)
+2. Add content-match candidate-gen for name/address in Account job descriptions
+3. Evaluate clustering-window widening (45d, measure false-merge impact)
+4. Then: finish classifying the remaining 506 opps (or let the fixed function do it)
+
+The AroFlo API call (§2.6 correspondence verification) is still the unblocking
+move for the correspondence coverage hole — but the autonomy gap is now higher
+priority because it causes silent misclassification on every run.
 
 ## Key paths
+
 - Spec: `~/crm-build/docs/PETTR_CRM_DATA_SPEC.md` (CANONICAL)
-- T7: `t7-classifier.ts` / `classify.ts` (production runtime) / CC-as-classifier (validation)
-- Timeline build: `bigquery/build_lead_timeline.sql`; UI route
-  `src/app/api/leads/[id]/interactions/route.ts`; hydration `…/interaction/route.ts`
+- Cascade function: `scripts/run-cascade.ts` (9 steps, committed)
+- Cascade spec: `docs/END_TO_END_FUNCTION.md` (v2)
+- Reconciliation: `docs/t7_wc_reconciliation_full.md` (partial, honest)
+- T7: `t7-classifier.ts` / `classify.ts` (production) / CC-as-classifier
+- Timeline build: `bigquery/build_lead_timeline.sql`
 - Tables: `lead_timeline`, `lead_gate`, `opportunities`, `crm_account_exclusions`,
-  `tasks_complete` (job_status), `tasks_deduped`, `invoices_deduped`, `all_leads_enriched`,
-  `raw_emails_received`/`raw_emails_sent`, `raw_calls`/`raw_recordings`/`raw_call_legs`
-- Firestore: `crm_lead_overrides`, `crm_match_overrides` (keyed `lead_id`+`job_number`, NEVER
-  `opportunity_id` — it changes on rebuild)
+  `crm_t7_match_queue`, `crm_auto_classifications`, `t7_recon_classify_input`
+- Firestore: `crm_lead_overrides`, `crm_match_overrides` (keyed by stable keys,
+  NEVER opportunity_id)
 - BQ: `pttr-taskdata`, `ds_crm`/`ds_aroflo`/`gd_WhatConverts`, `--location=US`
-- Orchestrator good revision: 00025-qam. Deploy via `deploy.sh` (committing SQL ≠ deployed).
-- AroFlo Postman: `/Users/ricgordon/pettr-data/AroFlo API.postman_collection.json`
+- Orchestrator: deploy via `deploy.sh` (committing SQL != deployed)

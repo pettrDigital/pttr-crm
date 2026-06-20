@@ -781,6 +781,15 @@ be rejected — add the specific phone/email to the list instead.
 `test_numbers` or `lkp_did_trade` with a note and reason. The list is
 small (16 entries) and slow-growing — this is by design.
 
+**LIVE VIOLATION**: The conflation guard in `t7_match_candidates.sql`
+(`conflated_phones` CTE) excludes phones appearing on 10+ Account job
+descriptions. This is a frequency-based heuristic — the exact pattern
+§17.1 bans. Proof: Mark Ford's phone was blocked despite having a real
+$466 invoiced Account job (JN 140906). The guard needs replacing with an
+explicit by-list exclusion of known high-volume phones (strata agency
+main lines). Until fixed, the cascade function silently misclassifies
+content-match conversions as non-conversions on every unattended run.
+
 ### §17.2 Architectural Principle — Facts in Pre-Passes, Not AI
 
 **RULE**: If a classification decision can be checked against structured data
