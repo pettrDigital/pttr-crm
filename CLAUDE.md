@@ -58,6 +58,28 @@ Secrets (API keys, credentials) are stored in **GCP Secret Manager** -- referenc
 
 **THE RULE**: If the volume is too large for one pass, batch it (50 leads per batch, ~12 rounds for 600 leads) and say so. Speed is not a reason to change the engine. If you cannot run the specified engine at the required volume, say that -- do not silently downgrade.
 
+## How the Cascade Runs (classification flow)
+
+1. **Run Step 7:**
+   `npx tsx scripts/run-cascade.ts --step=7`
+   Materialises `ds_crm.t7_classify_input` (BQ table) and exits.
+
+2. **Classify by querying sub-batches from BQ:**
+   `SELECT * FROM ds_crm.t7_classify_input WHERE gate_stage = 'judgement:NQ/NB' LIMIT 50 OFFSET <N*50>`
+   For each row, the classifier (CC in session, or Cowork) applies
+   NQ_NB_SYSTEM_PROMPT or BOOKED_SYSTEM_PROMPT, emits the locked
+   T72Rationale JSON shape, and INSERTs into `ds_crm.t7_classify_staging`
+   with the current run_id. Repeat until all leads classified.
+
+3. **Run Step 8:**
+   `npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>`
+   Reads staging, validates via validateVerdict, batch-MERGEs to
+   `crm_auto_classifications`, deletes staging rows for that run_id.
+
+4. **Run Step 9:** readout (unchanged).
+
+No JSON file handoff anywhere in this flow.
+
 ## Starting a New Session
 
 Read these docs IN THIS ORDER before doing any work:

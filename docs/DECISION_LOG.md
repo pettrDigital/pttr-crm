@@ -283,3 +283,123 @@ commit, file). State lives in the spec; this log records how it got there.
   count check at Step 7 against an expected envelope.
 
 ---
+
+## 2026-06-20 — L3 §3: T7.2 classification run complete
+
+- DONE: 538 judgement-residual leads classified by CC-as-classifier.
+  Input: docs/t7_classify_ai_input.json (1.6MB, 538 leads).
+  Output: docs/t7_classify_ai_output.json (538 classifications).
+  Engine: CC reading full timelines against BOOKED_SYSTEM_PROMPT
+  (95 leads) and NQ_NB_SYSTEM_PROMPT (443 leads). No keyword
+  shortcuts, no API calls — S15.1a AI Seam Integrity honoured.
+
+- DONE: Step 8 batch MERGE to crm_auto_classifications. 538 rows
+  written in 11 batches of 50. All passed assertValidLeaf +
+  validateT72Rationale + rationale.chosen cross-check pre-flight.
+  Schema fix: 5 columns (rationale, jobnumber, run_id, has_outbound,
+  has_internal_touch) added via ALTER TABLE — table pre-dated L2.
+  SQL fix: explicit STRUCT typing for UNNEST (uniform nullable types),
+  explicit INSERT column list (schema order mismatch from ALTER).
+
+- DONE: Step 9 readout generated. 1,460 total leads processed.
+  286 resolved via T7.2:judgement, 673 determined:gate, 501 unresolved.
+  12 low-confidence leads (< 0.70), all thin-content (empty forms,
+  brief calls, communication failures). Full readout at
+  docs/cascade_readout.json.
+
+  Classification distribution (538 T7.2 leads):
+    Not Quotable (177): Spam 96, SNP 38, WN 22, OSA 13, CIO 5, CPR 3
+    Not Booked (271): NFUR 124, CU 78, BE 14, TSR 13, CR 13,
+      P/MCO 10, C/S 8, WQOP 5, Other 1
+    Booked (95): QO 81, UCJOS 10, CIP 4
+    (5 additional pre-existing rows in BQ from earlier testing)
+
+  4 Completed-Invoice-Pending leads with confirmed EFT/AMEX payments:
+    J-142780 Hawanatu $495, J-142947 Hammad $242,
+    J-142955 Aqeel $692, J-142975 Michelle $1,045.
+
+---
+
+## 2026-06-20 — L3.5: Engine build attempt
+
+- DECISION: classifyLead in run-cascade.ts is intentionally a throw.
+  CC reasoning (the validated 89.1% engine) is not callable from inside
+  a tsx script — the model is the engine, and the engine runs at the
+  AI seam between two cascade invocations, not as a function call.
+  classifyLead defines the contract accurately (prompt selection,
+  allowed-set derivation with pre-pass constraints, prompt assembly,
+  validation steps) but cannot invoke the engine because the engine
+  is the conversation participant, not an API endpoint.
+  → scripts/run-cascade.ts classifyLead function
+
+- DONE: validateVerdict function built and wired into Step 8. Validates
+  every CC-produced verdict against the classifyLead contract: shape
+  (validateT72Rationale), leaf (assertValidLeaf), chosen === sub_status
+  cross-check, and chosen-in-allowed-set (pre-pass constrained). 538/538
+  verdicts pass. This is the same validation classifyLead step 5 specifies.
+  → scripts/run-cascade.ts validateVerdict, step8_writeClassifications
+
+- DECISION: The cascade runs end-to-end via two invocations:
+  (1) `--step=7` materialises input, prints "AI SEAM", exits (line 1023).
+  (2) CC classifies in conversation, writes output file.
+  (3) `--step=8` reads output, validates via validateVerdict, batch MERGEs.
+  This is a two-invocation model with a human-in-the-loop gap at Step 7.
+  The gap is structural, not a TODO — the classification engine (CC) runs
+  as a conversation participant, not as a callable API.
+  → scripts/run-cascade.ts main(), lines 1018-1024
+
+- DONE: Step 8 SQL fixes for BQ compatibility:
+  (a) Chunked MERGE into batches of 50 (BQ query size limit).
+  (b) Explicit STRUCT<...> typing in UNNEST arrays (uniform nullable types —
+      CAST(NULL AS STRING) instead of bare NULL to avoid supertype errors).
+  (c) Explicit INSERT column list instead of INSERT ROW (column order
+      mismatch after ALTER TABLE added 5 columns at end of existing table).
+  → scripts/run-cascade.ts step8_writeClassifications
+
+- DECISION: Cowork wired as the autonomous trigger for the two-invocation
+  cascade. Project "PETTR CRM Lead Classification" set up in Claude Cowork
+  pointing at ~/crm-build. Cowork reads CLAUDE.md, the spec, the decision
+  log, and the cascade code; first read-only task passed (accurate
+  project summary, correct articulation of S15.1a in own words). Cowork
+  drives the seam: triggers --step=7, classifies via its own Claude
+  reasoning per the validated prompts at the seam, triggers --step=8.
+  Same model class as CC, autonomous execution. The L3.5 "engine call
+  is open" problem is closed at the architecture layer — the engine is
+  the model at the seam, the trigger is Cowork, no headless CC or paid
+  API needed for the current scale.
+  → Claude Cowork project setup
+
+---
+
+## 2026-06-20 — L3.6: Step 7/8 file-handoff retired
+
+- DECISION: Step 7 no longer writes docs/t7_classify_ai_input.json.
+  The judgement-residual population is materialised to
+  ds_crm.t7_classify_input (BigQuery table) instead. Classification
+  happens by querying sub-batches from that table directly.
+  → scripts/run-cascade.ts step7_classify
+  → ds_crm.t7_classify_input DDL
+
+- DECISION: Step 8 no longer reads docs/t7_classify_ai_output.json.
+  Classifications are written to ds_crm.t7_classify_staging by
+  the classifier per sub-batch. Step 8 reads staging for the
+  current run_id, validates via validateVerdict, batch-MERGEs to
+  crm_auto_classifications, deletes staging rows for that run_id.
+  → scripts/run-cascade.ts step8_writeClassifications
+  → ds_crm.t7_classify_staging DDL
+
+- DECISION: The classification flow is now BQ-query-driven, not
+  file-driven. Documented in CLAUDE.md. This matches the June 20
+  morning-run mechanics and removes the chunked-file-Read overhead
+  that made today's L3 §3 take all day.
+
+- DONE: Dry-run test passed. 5 synthetic leads, 4 valid + 1
+  invalid in staging. Step 8 halted on the invalid, nothing
+  written to crm_auto_classifications. Fixed the invalid,
+  re-ran, all 5 landed. Staging truncated correctly.
+
+- UNAFFECTED: Today's L3 §3 run_id and its 538 classifications
+  remain in crm_auto_classifications untouched (549 total rows
+  confirmed after test cleanup).
+
+---
