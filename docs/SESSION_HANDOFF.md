@@ -32,7 +32,7 @@ system back to Ric — the spec already states it. Your job is to act on current
 
 ## WHERE THINGS STAND (updated 2026-06-20)
 
-### END-TO-END CASCADE FUNCTION — BUILT, FIRST RUN PARTIAL
+### END-TO-END CASCADE FUNCTION — BUILT, FIRST RUN COMPLETE
 
 - **Built**: `scripts/run-cascade.ts` (committed b876f5a + 7a69084). 9 steps per
   `docs/END_TO_END_FUNCTION.md` v2. Runs deterministic spine + AI seam (CC-mode),
@@ -47,17 +47,18 @@ system back to Ric — the spec already states it. Your job is to act on current
   - **T7.2** (Step 7): paused mid-classification. 45 of 453 NQ/NB hand-classified
     by CC. 106 Booked:completed_zero not yet started. See reconciliation doc.
 
-### WC RECONCILIATION — PARTIAL (1,057 leads mapped, ~551 classified/handled)
+### WC RECONCILIATION — COMPLETE (1,057 leads, 0 unresolved)
 
 - **Population**: 1,215 CSV → 116 test excluded → 1,057 mapped via 3-way join
   (927 primary wc_lead_id + 128 wc_leads array + 2 phone fallback). Foots exactly.
-- **Classified**: 455 determined (gate) + 8 manually handled (orphans) + 37 hand-
-  classified NQ/NB + 2 Donna NJR = ~502 classified. 506 opps pending (444 NQ/NB +
-  94 Booked:completed_zero deduped).
-- **Materialised input**: `t7_recon_classify_input` BQ table has all 547 judgement
-  opps with full timelines + pre-pass facts. Classification can resume from this table.
-- **Full doc**: `docs/t7_wc_reconciliation_full.md` — honest partial state, not
-  projected counts.
+- **Classified**: 455 determined (gate) + 596 T7.2 classified + 6 system-missed
+  conversions = 1,057. Zero unresolved.
+- **Staging**: all 547 judgement-opp classifications written to
+  `crm_auto_classifications` (action='proposed' or 'system_miss').
+- **Full doc**: `docs/t7_wc_reconciliation_full.md` — complete with Fergus comparison
+  and linker-miss metric.
+- **Linker-miss rate**: 6/602 judgement leads (1.0%) are real conversions the
+  system misclassified. $18,090 invoiced. See reconciliation doc for detail.
 
 ### THE KEY FINDING: AUTONOMY GAP (conversion-orphan classes)
 

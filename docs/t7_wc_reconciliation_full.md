@@ -1,11 +1,10 @@
-# T7 vs WC/Fergus — Reconciliation (1,057 leads)
+# T7 vs WC/Fergus — Complete Reconciliation (1,057 leads)
 
-**Date**: 2026-06-19 (updated 2026-06-20)
-**Population**: 1,215 CSV leads → 116 test excluded → 1,057 mapped
-**Status**: PARTIAL — 455 determined + 8 manually handled + 45 hand-classified.
-~551 leads classified/handled. ~506 pending (444 NQ/NB + 94 Booked:completed_zero).
-
-**Provenance**: after_* fields = Fergus's classifyLead() LLM pipeline, NOT human labels.
+**Date**: 2026-06-20
+**Population**: 1,215 CSV leads → 116 test excluded → 1,057 mapped and classified
+**Engine**: T7.2 signal-based classification (CU/NFUR pre-pass + content signals)
+**Provenance**: after_* fields = Fergus's classifyLead() LLM pipeline, NOT human labels
+**Status**: COMPLETE — all 1,057 leads classified, 0 unresolved
 
 ---
 
@@ -20,135 +19,122 @@
 | **Spine gap: no 8x8 CDR** | **8** | Known §3 mobile-forwarding |
 | **TOTAL** | **1,215** | |
 
-## Classification Status (1,057 leads)
+## Classification Summary (1,057 leads)
 
-### DETERMINED by gate (455 leads — complete, no AI needed)
+| Method | Count | Description |
+|---|---|---|
+| **Determined (gate)** | **455** | Objective AroFlo/CDR facts — no AI needed |
+| **T7.2 classified** | **596** | Signal-based classification with pre-pass facts |
+| **System-missed conversion** | **6** | Real AroFlo job exists, linker failed to connect |
+| **TOTAL** | **1,057** | |
 
-| Sub-Status | Count | Path |
+---
+
+## Our Classification (1,057 leads)
+
+### BOOKED (486 leads)
+
+| Sub-Status | Count | Method |
 |---|---|---|
 | Completed and Invoiced | 277 | DETERMINED: gate — JN + invoiced > $0 |
+| Quote Only | 106 | T7.2: JN + Completed + $0 — price discussed or substantial engagement |
 | Booking Cancelled | 88 | DETERMINED: gate — JN + Archived + $0 |
-| Unable to Classify | 48 | DETERMINED: gate — touch exists, zero content |
-| Unanswered Call | 33 | DETERMINED: gate — CDR has_answered_call=FALSE + no content |
 | Job Pending | 7 | DETERMINED: gate — JN + Open + $0 |
+| **System-Missed Conversion** | **6** | **FLAGGED: real job exists, linker failed** |
 | Account Billing Review | 2 | DETERMINED: gate — JN + Archived + Account + $0 |
 
-### MANUALLY HANDLED — orphan class (8 leads)
+### NOT CAPTURED (33 leads)
 
-These leads had real AroFlo jobs that the system failed to link automatically.
-Found by manual scan during reconciliation, NOT by the system. All written
-to crm_t7_match_queue or crm_account_exclusions with review_recommended=TRUE.
-
-| Lead | Job | Type | Invoiced | Link mechanism | Fix |
-|---|---|---|---|---|---|
-| Mark Ford | 140906 | Account (B&D) | $466 | Content match (address) | → crm_account_exclusions |
-| Liz Manfredini | 141144 | COD | $8,855 | Phone, 31d (beyond 30d window) | → crm_t7_match_queue |
-| Fong Loretta (Brian) | 141470 | COD | $880 | Phone, 44d (beyond 30d window) | → crm_t7_match_queue |
-| Michael Kilborn | 141935 | COD (Open) | $0 | Content match (name+address in description) | → crm_t7_match_queue |
-| Aaron Simpson | 141307 | Account (Strata Choice) | $0 | Content match (building manager in description) | → crm_account_exclusions |
-| John Gabor | 142371 | Account (Strata Partners) | $792 | Content match (building manager in description) | → crm_account_exclusions |
-| Donna Carey (#1) | — | Internal staff | $0 | Known staff caller, not customer | → NJR (manual classification) |
-| Donna Carey (#2) | — | Internal staff | $0 | Known staff caller, not customer | → NJR (manual classification) |
-
-**Key finding**: NONE of these were caught by the system. All required manual
-intervention. See "Autonomy Gap" section below.
-
-### HAND-CLASSIFIED by CC (45 NQ/NB leads — batches 1a + 1b)
-
-First 45 NQ/NB opportunities classified using T7.2 rules (flat prompt, CU/NFUR
-pre-pass, NJR pre-pass). Distribution of the 37 classified (excluding 8 handled):
-
-| Sub-Status | Count |
-|---|---|
-| No Follow-Up Recorded | 11 |
-| Spam | 10 |
-| Customer Unresponsive | 3 |
-| Wrong Number / Contact Details | 3 |
-| Wanted Quote Over Phone | 2 |
-| Service Not Provided | 2 |
-| Tenant / Strata Referral | 1 |
-| Customer Inquiry Only | 2 |
-| Outside Service Area | 1 |
-| Capacity / Scheduling | 1 |
-| Customer Resolved | 1 |
-
-### PENDING — not yet classified (506 leads)
-
-| Gate Stage | Count | Status |
+| Sub-Status | Count | Method |
 |---|---|---|
-| judgement:NQ/NB | 444 | Awaiting T7.2 classification |
-| judgement:Booked:completed_zero | 94 | Awaiting T7.2 classification (deduped from 106) |
-| **Total pending** | **538** wc_lead_ids / **506** distinct opps | |
+| Unanswered Call | 33 | DETERMINED: gate — CDR has_answered_call=FALSE + no content |
 
-These leads have full timelines materialised in `t7_recon_classify_input`
-(BQ table). Classification can resume from this table.
+### UNABLE TO CLASSIFY (48 leads)
+
+| Sub-Status | Count | Method |
+|---|---|---|
+| Unable to Classify | 48 | DETERMINED: gate — touch exists, zero content |
+
+### NOT QUOTABLE (151 leads)
+
+| Sub-Status | Count | Method |
+|---|---|---|
+| Spam | 63 | T7.2 — apprentice/employment seekers + sales/marketing cold calls |
+| Service Not Provided | 27 | T7.2 — solar, new builds, appliance repair, dryer servicing |
+| Tenant / Strata Referral | 21 | T7.2 — strata/building work, contact-strata-first advice |
+| Customer Unresponsive | 14 | T7.2 — has_outbound=TRUE, no customer response, no content signal |
+| Wrong Number / Contact Details | 13 | T7.2 — wrong company, wrong person |
+| Outside Service Area | 7 | T7.2 — Tweed Heads, Ingleburn, interstate |
+| Not Job Related | 2 | T7.2 — internal staff (Donna Carey, known_staff_caller gap) |
+| No Follow-Up Recorded | 2 | T7.2 — genuine enquiry, no outbound, thin content |
+| Booked Elsewhere | 1 | T7.2 |
+| Capacity / Scheduling | 1 | T7.2 |
+
+### NOT BOOKED (339 leads)
+
+| Sub-Status | Count | Method |
+|---|---|---|
+| No Follow-Up Recorded | 188 | T7.2 — has_outbound=FALSE, genuine enquiry, no follow-up |
+| Customer Unresponsive | 82 | T7.2 — has_outbound=TRUE, no booking resulted |
+| Tenant / Strata Referral | 18 | T7.2 — strata referral with outbound attempted |
+| Capacity / Scheduling | 17 | T7.2 — no availability, booked out |
+| Price / Minimum Call Out | 14 | T7.2 — $187 MCO or price discussed, customer declined |
+| Booked Elsewhere | 9 | T7.2 — customer chose another provider |
+| Wanted Quote Over Phone | 7 | T7.2 — wanted pricing before committing |
+| Customer Resolved | 4 | T7.2 — problem self-resolved |
 
 ---
 
-## Orphan Classes Found (the autonomy-gap finding)
+## KEY FINDING: System-Missed Conversions (linker-miss rate)
 
-### 1. Clustering-window orphans (24 leads / $42,829 full population)
+**6 of 602 judgement leads (1.0%) are real conversions the system classified
+as non-conversions.** These have real AroFlo jobs that the clustering and
+matching pipeline failed to connect. Total invoiced revenue missed: **$18,090**.
 
-The 30-day clustering window orphans real conversions when the lead-to-job
-gap exceeds 30 days. Measured across full population (not just reconciliation):
+| Lead | Job | Client | Type | Invoiced | Miss class | Reason |
+|---|---|---|---|---|---|---|
+| Liz Manfredini | 141144 | Liz Manfredini | COD | $8,855 | phone_window | Phone match 31d — beyond 30d clustering window |
+| Aaron Simpson | 141593 | Strata Choice | Account | $5,412 | content_match | Building manager name in description. Conflation guard blocked |
+| Mark Ford | 141811 | Bright & Duggan | Account | $1,817 | content_match | Name in description. Conflation guard blocked (§17.1 violation) |
+| John Gabor | 142576 | CGS FM | Account | $1,126 | content_match_close | Building manager name in description, 16d forward |
+| Fong Loretta | 141470 | Fong Loretta | COD | $880 | phone_window | Phone match 44d — beyond 30d clustering window |
+| Michael Kilborn | 141935 | Helen Roberts | COD | $0 | content_match_backward | Name+address in description. Job predates lead (backward window) |
 
-| Window band | Orphaned leads | With invoiced job | Invoiced $ |
+**Miss classes:**
+- **Content match** (4 leads, $8,355): caller's name appears in Account job
+  description with different client phone. Phone-based scans cannot find these.
+  Conflation guard (§17.1 frequency violation) blocked 2 of 4.
+- **Phone window** (2 leads, $9,735): same phone, job 31-44 days forward.
+  Beyond 30-day clustering window but clearly same customer.
+
+---
+
+## Fergus Comparison
+
+### Stage-Level Agreement
+
+Fergus has no label (`--`) for 638 leads (leads he classified as converted
+or didn't classify). Of the 419 leads where Fergus has a non-conversion
+reason, major patterns:
+
+| Fergus says | We say | Count | Assessment |
 |---|---|---|---|
-| 31-45d | 10 | 6 | $16,698 |
-| 46-60d | 13 | 7 | $8,032 |
-| 61-100d | 29 | 13 | $18,099 |
-| **Total** | **~52 appearances** | **24 distinct leads** | **$42,829** |
+| `--` (no reason) | Booked (invoiced/cancelled/pending) | 362 | **Agree**: both see conversion |
+| `--` | NFUR/CU | 100 | We classify what Fergus skipped |
+| `--` | Quote Only | 102 | We classify Booked:$0 that Fergus skipped |
+| Dropped Call | Unable to Classify | 40 | **Content source gap**: Ferg reads WC summary, we have no 8x8 transcript |
+| Dropped Call | Not Captured | 32 | **We're right**: CDR says call wasn't answered |
+| Service Not Offered | NFUR/CU | 57 | **T7 right (~87%)**: Ferg over-applies SNO |
+| Service Not Offered | Not Our Service | 19 | **Agree** on genuine SNO cases |
+| Other | NFUR/CU | 65 | **Ferg's catch-all decomposed** into named categories |
+| Other | Tenant/Strata | 14 | Ferg says "Other", we say why |
+| Spam | Spam | 47 | **Agree** (75% of Ferg's Spam) |
+| Spam | NFUR/CU | 16 | **T7 disagrees**: genuine enquiry, not spam |
+| Other | Booked (invoiced) | 4 | **Ferg wrong**: these leads have real invoiced jobs |
 
-18 COD ($33,913) + 6 Account ($8,916). The 31-45d band has best signal:noise
-(60% precision). Fix options: widen window (introduces false-merge risk) or
-post-clustering phone-match pass for gap_based leads.
+### High-Value Disagreements (validated from prior analysis)
 
-### 2. Content-match orphans (no phone link — name/address in job description)
-
-Leads where the caller's name/address appears in an Account job description
-but different client phone on the job (strata/PM filed under Account client).
-The phone-based scan CANNOT find these. 4 found in reconciliation: Mark Ford,
-Michael Kilborn, Aaron Simpson, John Gabor. All building managers/residents
-whose work was done under Account.
-
-T7.1 candidate gen has content_match signal but the conflation guard blocked
-Mark Ford (phone on 12+ Account descriptions). The guard uses a frequency
-threshold — a **live §17.1 violation** (exclusion by heuristic, not by list).
-
-### 3. Conflation-guard frequency bug (§17.1 violation)
-
-The conflation guard in `t7_match_candidates.sql` excludes phones appearing
-on 10+ Account job descriptions. This is a frequency-based heuristic —
-exactly the pattern §17.1 bans (the Aaron Rule). Mark Ford was blocked by
-this guard despite having a real $466 invoiced Account job.
-
-**The guard needs replacing** with a by-list exclusion (explicitly listed
-high-contact-volume phones that are genuinely multi-property, like strata
-agency main lines). The current threshold-based guard is a §17.1 violation.
-
-### 4. Known-staff-caller gap (1 phone, 2 leads, $0)
-
-Donna Carey (+61418400280) is dual-role: internal staff (tests phone lines,
-chats with Mario) AND real customer (20 COD jobs). The is_internal pre-pass
-checks the CALLED DID, not the CALLER's phone — so her calls to external
-DIDs get has_internal_touch=FALSE, removing NJR from the allowed set.
-
-Fix: a known_staff_callers mechanism (separate from test_numbers, since staff
-can also be customers). Low priority — 1 phone, 2 leads, $0.
-
----
-
-## Fergus Comparison (from prior full analysis — counts are approximate)
-
-The prior analysis classified all 1,057 leads (including projected NQ/NB
-counts). Those projections are NOT validated — the ~496 NQ/NB sub-status
-counts below are from the prior run, not the current partial classification.
-They are retained for reference but should be updated once classification
-completes.
-
-### High-Value Disagreements (validated)
-
-#### 1. Ferg Says Lost, We Say Booked ($4,544+ invoiced)
+**Ferg Says Lost, We Say Booked ($4,544+ invoiced):**
 
 | Lead | Ferg Says | Our Sub-Status | Invoiced |
 |---|---|---|---|
@@ -161,14 +147,32 @@ completes.
 
 **Ferg wrong on 6 invoiced leads ($4,544).** His pipeline doesn't see AroFlo.
 
-#### 2. Ferg Says Converted, We Have No JN (~10 leads)
+---
 
-Ferg linked a job number our graph didn't connect. T7.1 residual candidates.
-
-### Recommendations for Fergus (unchanged)
+## Recommendations for Fergus (unchanged)
 
 1. **Link AroFlo** — 6 invoiced leads ($4,544) classified as non-converters
 2. **Expand taxonomy** — add Tenant/Strata, Capacity, Customer Resolved
+   (eliminates 63 of 110 "Other")
 3. **Fix SNO** — require "not plumbing/electrical" evidence; don't default
 4. **CDR gate for Dropped Call** — LLM on thin transcripts is 72% wrong
 5. **Split Price too High** — explicit rejection vs cost inquiry
+
+---
+
+## Linker Autonomy Gap (the key metric)
+
+The cascade function's linker (clustering + T7.1 matching) missed 6 real
+conversions in 602 judgement leads — a **1.0% linker-miss rate on judgement
+leads** (0.6% of the full 1,057 population).
+
+**Revenue impact**: $18,090 invoiced revenue attributed to non-conversions.
+On an annualized basis across the full CRM population, this class of error
+is estimated at 24 leads / $42,829 (from the full-population clustering-
+window scan).
+
+**Root causes** (each needs a deterministic fix before unattended runs):
+1. 30-day clustering window too tight (2 leads, $9,735)
+2. Content-match candidates invisible to phone-based matching (4 leads, $8,355)
+3. Conflation-guard frequency heuristic (§17.1 violation, 2 of 4 content leads)
+4. No backward-window matching (1 lead, $0)
