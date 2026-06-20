@@ -44,21 +44,26 @@ system back to Ric — the spec already states it. Your job is to act on current
   - **T7.1** (Step 5): 101 signal leads evaluated → 0 matches (all structurally
     correct abstains — Mark Ford conflation guard, Ian Johnston/Sam Girvan backward
     window). Verified real, not a bug.
-  - **T7.2** (Step 7): paused mid-classification. 45 of 453 NQ/NB hand-classified
-    by CC. 106 Booked:completed_zero not yet started. See reconciliation doc.
+  - **T7.2** (Step 7): all 611 judgement leads classified (signal-based with
+    CU/NFUR pre-pass). 112 Booked:completed_zero → Quote Only. See reconciliation doc.
 
-### WC RECONCILIATION — COMPLETE (1,057 leads, 0 unresolved)
+### WC RECONCILIATION — COMPLETE (1,215 leads footed, zero unexplained gaps)
 
-- **Population**: 1,215 CSV → 116 test excluded → 1,057 mapped via 3-way join
-  (927 primary wc_lead_id + 128 wc_leads array + 2 phone fallback). Foots exactly.
-- **Classified**: 455 determined (gate) + 596 T7.2 classified + 6 system-missed
-  conversions = 1,057. Zero unresolved.
-- **Staging**: all 547 judgement-opp classifications written to
-  `crm_auto_classifications` (action='proposed' or 'system_miss').
-- **Full doc**: `docs/t7_wc_reconciliation_full.md` — complete with Fergus comparison
-  and linker-miss metric.
-- **Linker-miss rate**: 6/602 judgement leads (1.0%) are real conversions the
-  system misclassified. $18,090 invoiced. See reconciliation doc for detail.
+- **Population**: 1,215 CSV (ferg_csv_classifications) → 109 test excluded →
+  1,095 mapped (3-way join) + 8 no-identity + 3 spine-gap. Every lead bucketed.
+- **Classified**: 476 determined (gate) + 611 T7.2 classified + 6 system-missed
+  conversions + 2 pending = 1,095 mapped. Zero unexplained.
+- **Staging**: all classifications written to `crm_auto_classifications`
+  (action='proposed' or 'system_miss'). Reconciliation table: `t7_reconcile_complete`.
+- **Full doc**: `docs/t7_wc_reconciliation_full.md` — complete with Fergus
+  comparison, adjudication buckets, and linker-miss metric.
+- **Fergus comparison** (428 comparable leads where Ferg has a reason):
+  T7 agrees or improves on 63% (79 agree + 104 Other decomposed + 15 Booked
+  + 72 SNO/Price corrected). Genuine disagreement 14%. Ambiguous 4%.
+- **Linker-miss rate**: 6/1,095 mapped (0.5%), $18,090 invoiced. See §7 of
+  reconciliation doc.
+- **Key Ferg findings**: SNO over-application (62), Other decomposition (104),
+  Dropped Call content-gap (73), 6 invoiced leads called lost ($4,544).
 
 ### THE KEY FINDING: AUTONOMY GAP (conversion-orphan classes)
 
