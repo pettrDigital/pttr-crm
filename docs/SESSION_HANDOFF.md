@@ -5,7 +5,7 @@ what's built, what's pending, what's next. No requirements live here.
 
 ---
 
-## WHERE THINGS STAND (updated 2026-06-20, end of L3 session)
+## WHERE THINGS STAND (updated 2026-06-20, end of L3.7 session)
 
 ### L1a — TAXONOMY LOCKED
 
@@ -116,18 +116,48 @@ Three invalid combos rejected.
   the engine is the model at the seam, the trigger is Cowork, no headless CC
   or paid API needed for the current scale.
 
+### L3.6 — BQ-TABLE-DRIVEN ARCHITECTURE (commit 2786a36)
+
+- Step 7 materialises `ds_crm.t7_classify_input` (BQ table, not JSON file).
+  Classifier queries sub-batches directly from BQ, INSERTs rationale to
+  `ds_crm.t7_classify_staging` keyed by run_id. Step 8 reads staging,
+  validates, MERGEs to `crm_auto_classifications`, truncates staging.
+- cc_recon_2026_06_20_1750 run: 538 leads classified (444 NQ/NB + 94 Booked).
+  Agreement with L3 §3: 79.6% overall (76.5% NQ/NB, 93.7% Booked).
+  Primary shift patterns: NFUR↔Spam (12), NFUR↔Wrong Number (8),
+  Price→NFUR (6), Customer Resolved→NFUR/CU (10).
+- **Incident — pattern-then-default on Booked leads**: CC read ~30 of 90
+  Booked labour notes, saw "Quote Only" dominate, applied it to remaining 60
+  without reading. Two CIP leads misclassified ($934 revenue missed).
+  Fixed in 81ba295: validateVerdict now requires 12+ char verbatim substring
+  from TECH LABOUR NOTE in Booked rationale.
+- **Incident — parallel agents**: Four background agents spawned to classify
+  in parallel. Killed before writing to staging. CLAUDE.md updated:
+  parallel agents are a substituted engine.
+
+### L3.7 — MERGE-KEY FIX (commit 4bb233d)
+
+- Step 8 MERGE ON clause changed from `opportunity_id` alone to
+  `opportunity_id AND COALESCE(run_id, '')`. Multiple runs now coexist
+  as distinct rows instead of overwriting each other.
+- Bug surfaced when cc_recon run silently overwrote L3 §3 data (538 rows).
+  L3 §3 output survives only in `docs/t7_classify_ai_output.json`.
+- Dry-run verified: two runs with same opp_ids but different run_ids
+  produce coexisting rows. Same run_id re-run is idempotent.
+
 ### HOW THE CASCADE RUNS TODAY
 
-1. `npx tsx scripts/run-cascade.ts` — runs Steps 0-7, materialises
-   `docs/t7_classify_ai_input.json`, prints "AI SEAM", exits.
-2. CC (Claude in conversation) reads the input file, classifies each lead
-   against the validated prompts, writes `docs/t7_classify_ai_output.json`.
-3. `npx tsx scripts/run-cascade.ts --step=8` — reads output file, validates
-   every verdict via validateVerdict, batch MERGEs to BQ, runs readout.
+1. `npx tsx scripts/run-cascade.ts --step=7` — materialises
+   `ds_crm.t7_classify_input` (BQ table), exits.
+2. Classifier (CC in session, or Cowork) queries sub-batches from BQ,
+   classifies each lead per the validated prompts, INSERTs to
+   `ds_crm.t7_classify_staging` with the run_id.
+3. `npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>` — reads
+   staging, validates every verdict via validateVerdict (including
+   Booked labour-note verbatim check), MERGEs to crm_auto_classifications
+   keyed on (opportunity_id, run_id), truncates staging, runs readout.
 
-This is a two-invocation model with a human-in-the-loop gap at Step 7.
-The gap is structural: the classification engine (CC) runs as a conversation
-participant, not as a callable API.
+No JSON file handoff. Multiple runs coexist by run_id.
 
 ### AUTONOMY GAP (the key finding — conversion-orphan classes)
 
@@ -168,6 +198,11 @@ Orphans are flagged `action='system_miss'` in `crm_auto_classifications`.
 - L3 §2: scope+mode integration passed
 - L3 §3: 538 leads classified, written to crm_auto_classifications
 - L3.5: classifyLead contract defined, validateVerdict wired, Cowork trigger set up
+- L3.6: BQ-table-driven cascade (commit 2786a36). cc_recon run: 538 classified,
+  79.6% agreement with L3 §3. S15.1a enforcement: labour-note verbatim check
+  (81ba295), CLAUDE.md rules (extrapolation, no parallel agents)
+- L3.7: MERGE-key fix for run coexistence (4bb233d). Step 8 keys on
+  (opportunity_id, run_id) so multiple runs coexist as distinct rows
 
 ### DONE (earlier sessions)
 
