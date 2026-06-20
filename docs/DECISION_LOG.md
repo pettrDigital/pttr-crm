@@ -432,9 +432,19 @@ commit, file). State lives in the spec; this log records how it got there.
   → Cowork instructions need updating: Step 8 trigger is now via control table
     INSERT, not via "Ric runs it manually". Update Cowork project instructions
     after this verification lands.
-  → commit c937f8a
+  → commit ab23ffa
 
 - DONE: Dry-run verified (5 leads, end-to-end success). Failure path verified
-  (validateVerdict halt captured verbatim, no MERGE on failure).
+  (validateVerdict halt captured verbatim, no MERGE on failure). Atomicity
+  verified (mixed batch: 4 valid NQ/NB + 1 invalid Booked; 0 rows merged,
+  bad row halts entire batch before any MERGE). Staging-delete confirmed
+  effective (0 rows remaining after successful Step 8). launchd trigger
+  confirmed via created_at→started_at gap (55s, consistent with 60s poll).
+  Re-verified 2026-06-21.
+
+- NOTE: The staging-delete log line in run-cascade.ts:882 prints
+  unconditionally after the DELETE job completes, without checking
+  affected-row count. Not a bug today (DELETE works), but a latent
+  false-positive if streaming-buffer rows are ever involved.
 
 ---
