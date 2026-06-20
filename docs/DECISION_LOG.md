@@ -419,3 +419,22 @@ commit, file). State lives in the spec; this log records how it got there.
   → commit 81ba295 (labour-note check), this commit (MERGE key fix)
 
 ---
+
+## 2026-06-21 — L3.8: launchd watcher + control table for autonomous Step 8 trigger
+
+- DECISION: Built ds_crm.t7_run_control + scripts/cowork-step8-runner.sh +
+  com.pettr.cowork-step8-runner launchd agent. Cowork writes 'ready' rows after
+  classification; the launchd agent polls every 60s and runs the actual tsx Step 8
+  command on the host. Wrapper is single-purpose: read run_id, run Step 8, write
+  outcome back to the control row. Verbatim stderr preserved in .error file.
+  → S15.1a preserved: Step 8 still runs on the Mac, under Ric's credentials,
+    executing the actual validateVerdict and MERGE.
+  → Cowork instructions need updating: Step 8 trigger is now via control table
+    INSERT, not via "Ric runs it manually". Update Cowork project instructions
+    after this verification lands.
+  → commit c937f8a
+
+- DONE: Dry-run verified (5 leads, end-to-end success). Failure path verified
+  (validateVerdict halt captured verbatim, no MERGE on failure).
+
+---

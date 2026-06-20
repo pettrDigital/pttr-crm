@@ -62,3 +62,4 @@ cloud-functions/aroflo-daily-orchestrator/build_lead_timeline.sql
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.cowork-step8-logs/
