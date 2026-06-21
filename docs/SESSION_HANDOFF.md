@@ -145,50 +145,68 @@ Three invalid combos rejected.
 - Dry-run verified: two runs with same opp_ids but different run_ids
   produce coexisting rows. Same run_id re-run is idempotent.
 
+### L3.8 — LAUNCHD WATCHER + CONTROL TABLE (commit ab23ffa)
+
+- `ds_crm.t7_run_control`: Cowork INSERTs status='ready' after classification.
+- `scripts/cowork-step8-runner.sh`: launchd agent polls every 60s, runs the
+  real Step 8 command on the Mac under Ric's credentials. Verbatim stderr
+  captured in `.cowork-step8-logs/`. S15.1a preserved.
+- Dry-run verified (5 leads, end-to-end success). Failure path verified
+  (validateVerdict HALT captured, 0 merged). Atomicity verified (mixed batch:
+  bad row halts entire batch before any MERGE).
+
+### L4 — L2 WIRING + ORPHAN PULLOUT (commit 2ad39c0)
+
+- **L2 modules wired into run-cascade.ts**: --population and --mode flags.
+  resolveRunConfig() validates combos before BQ work. StepFlags gate steps.
+  Population count + logRunStart after spine build. Step 9.5 footing check
+  wired with 4-bucket SQL verified against manifest {116, 1088, 8, 3} = 1215.
+  Step 7 conditional scoping (recon CTE vs scopeWhereClause by population).
+  Date window auto-set to 'all' for non-live populations.
+- **Step 6.5 orphan detection PULLED**: content-match scan produces ~7:1 false
+  positives (45 leads vs 6 known). Common first names and strata-resident names
+  match unrelated jobs. Adding task-notes/labour-notes made it worse.
+  S16.1 requirement stands; automated mechanism deferred. 6 known orphans
+  (S16.2, $10,993) handled manually.
+
 ### HOW THE CASCADE RUNS TODAY
 
-1. `npx tsx scripts/run-cascade.ts --step=7` — materialises
-   `ds_crm.t7_classify_input` (BQ table), exits.
-2. Classifier (CC in session, or Cowork) queries sub-batches from BQ,
-   classifies each lead per the validated prompts, INSERTs to
-   `ds_crm.t7_classify_staging` with the run_id.
-3. `npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>` — reads
-   staging, validates every verdict via validateVerdict (including
-   Booked labour-note verbatim check), MERGEs to crm_auto_classifications
-   keyed on (opportunity_id, run_id), truncates staging, runs readout.
+**Full reconciliation run:**
+1. `npx tsx scripts/run-cascade.ts --population=reconciliation_1215 --mode=full_recon --skip-sync`
+   Steps 0-3 (spine rebuild), population count = 1215, Step 4 (pre-passes),
+   Step 5 (T7.1 match — halts at AI seam if candidates), Step 6 (write matches),
+   Step 7 (materialise t7_classify_input — halts at AI seam).
+2. Classifier (CC or Cowork) queries sub-batches from BQ, classifies per
+   validated prompts, INSERTs to `t7_classify_staging` with run_id.
+3. Step 8: auto-triggered via launchd watcher (Cowork INSERTs to t7_run_control),
+   or manual `--step=8 --run-id=<id>`. Validates, MERGEs, runs readout + footing.
 
-No JSON file handoff. Multiple runs coexist by run_id.
+**Mode gating:**
+- `deterministic` — no AI steps (5/6/7/8 skipped). Steps 0-4, 9.
+- `full` — full pipeline, AI seam halts at Steps 5 and 7.
+- `full_recon` — full + Step 9.5 footing check (tolerance=0).
 
-### AUTONOMY GAP (the key finding — conversion-orphan classes)
+No JSON file handoff (T7.2). T7.1 still uses file handoff.
+Multiple runs coexist by run_id.
 
-The system does NOT self-capture conversion-orphans. 6 real-job leads found
-by manual scan, NONE by the system. Linker-miss rate: 6/1,095 (0.5%), $10,993.
+### AUTONOMY GAP (conversion-orphan classes — deferred)
 
-4 orphan classes (requirements for fixes are in spec S16):
-1. **Content-match** (4 leads, $1,258): name/address in Account job description,
-   different client phone. Phone-based scans cannot find these.
-2. **Clustering-window** (2 leads, $9,735 + 24 full-pop/$42,829): 30-day window
-   too tight. Liz Manfredini ($8,855 at 31d), Fong Loretta ($880 at 44d).
-3. **Conflation-guard** (live S15.1 violation): frequency heuristic blocked
-   Mark Ford despite real $466 job. Must replace with by-list.
-4. **Known-staff-caller** (Donna Carey, 2 leads, $0): low priority.
-
-6 orphan INSERTs were REVERTED (flag model: measure miss rate, don't patch).
-Orphans are flagged `action='system_miss'` in `crm_auto_classifications`.
+6 known orphans (S16.2, $10,993). Automated detection pulled from cascade
+(~7:1 false positives). Handled manually. See DECISION_LOG.md L4.
 
 ### OUTSTANDING — NEXT STEPS (priority order)
 
-1. **Generate docs/t7_wc_reconciliation_final.md** from cascade_readout.json.
-   This is the deliverable for Fergus.
-2. **Close autonomy gap** — make orphan classes self-capturing (spec S16):
-   content-match self-capture, conflation guard by-list, clustering window
-   widening.
-3. **AroFlo API correspondence-coverage verification** (spec S2.10).
-4. **Carried items**: T7.1 backward window, seam JSON §3-compliance, dual-
-   classification metric view, payment-regex fix, keyword_rules table,
-   vw_lead_enriched fanout, vw_accounts repoint.
+1. **First full end-to-end run** with --population=reconciliation_1215
+   --mode=full_recon. Verify spine rebuild, population count, footing check,
+   AI seam flow, and Step 8 auto-trigger all work together.
+2. **Wire OpenAI API** as classification engine (replacing CC manual).
+   Same contract: read from t7_classify_input, write to t7_classify_staging.
+3. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable for Fergus.
+4. **AroFlo API correspondence-coverage verification** (spec S2.10).
+5. **Carried items**: T7.1 backward window, clustering window widening,
+   conflation guard by-list, payment-regex fix, vw_lead_enriched fanout.
 
-### DONE (this session — 2026-06-20)
+### DONE (this session — 2026-06-20 / 2026-06-21)
 
 - L1a: taxonomy.ts locked, 7 consumers repointed
 - L1b: T7.2 seam rewired to read from taxonomy.ts, byte-diff clean
@@ -203,6 +221,11 @@ Orphans are flagged `action='system_miss'` in `crm_auto_classifications`.
   (81ba295), CLAUDE.md rules (extrapolation, no parallel agents)
 - L3.7: MERGE-key fix for run coexistence (4bb233d). Step 8 keys on
   (opportunity_id, run_id) so multiple runs coexist as distinct rows
+- L3.8: launchd watcher + t7_run_control table for autonomous Step 8 trigger
+  (ab23ffa). Verified: dry-run, failure-path, atomicity, launchd proof.
+- L4: L2 enforcement wired into cascade (2ad39c0). --population/--mode flags,
+  step gating, footing SQL verified {116,1088,8,3}=1215. Step 6.5 orphan
+  detection pulled (~7:1 false positives). Date window auto-widens for non-live.
 
 ### DONE (earlier sessions)
 

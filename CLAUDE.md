@@ -66,25 +66,38 @@ Secrets (API keys, credentials) are stored in **GCP Secret Manager** -- referenc
 
 ## How the Cascade Runs (classification flow)
 
-1. **Run Step 7:**
-   `npx tsx scripts/run-cascade.ts --step=7`
-   Materialises `ds_crm.t7_classify_input` (BQ table) and exits.
+**Invocation flags:**
+- `--population=<P>` — `live_post_dec2025` (default), `reconciliation_1215`, `historical_pre_dec2025`
+- `--mode=<M>` — `full` (default), `full_recon`, `deterministic`
+- `--scope=<S>` — date window: `100d` (default), `30d`, `90d`, `all`. Auto-set to `all` for non-live populations.
+- `--step=N` — resume from step N. `--run-id=ID` — required for step 8.
+
+**Full run (reconciliation):**
+
+1. **Steps 0-7:**
+   `npx tsx scripts/run-cascade.ts --population=reconciliation_1215 --mode=full_recon --skip-sync`
+   Rebuilds spine (Steps 0-3), validates population = 1215, runs pre-passes (Step 4),
+   T7.1 match (Step 5, halts at AI seam if candidates), writes matches + re-builds (Step 6),
+   materialises `t7_classify_input` (Step 7), exits at AI seam.
 
 2. **Classify by querying sub-batches from BQ:**
    `SELECT * FROM ds_crm.t7_classify_input WHERE gate_stage = 'judgement:NQ/NB' LIMIT 50 OFFSET <N*50>`
-   For each row, the classifier (CC in session, or Cowork) applies
-   NQ_NB_SYSTEM_PROMPT or BOOKED_SYSTEM_PROMPT, emits the locked
-   T72Rationale JSON shape, and INSERTs into `ds_crm.t7_classify_staging`
-   with the current run_id. Repeat until all leads classified.
+   Classifier (CC in session, or Cowork) applies NQ_NB_SYSTEM_PROMPT or BOOKED_SYSTEM_PROMPT,
+   emits T72Rationale JSON, INSERTs into `ds_crm.t7_classify_staging` with the run_id.
 
-3. **Run Step 8:**
+3. **Step 8 (auto-triggered or manual):**
+   Cowork INSERTs `status='ready'` row into `ds_crm.t7_run_control`. The launchd watcher
+   (`com.pettr.cowork-step8-runner`, 60s poll) picks it up and runs:
    `npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>`
-   Reads staging, validates via validateVerdict, batch-MERGEs to
-   `crm_auto_classifications`, deletes staging rows for that run_id.
+   Validates via validateVerdict, MERGEs to `crm_auto_classifications`, runs readout (Step 9),
+   footing check (Step 9.5 — halts if buckets ≠ manifest), writes snapshot.
 
-4. **Run Step 9:** readout (unchanged).
+**Step gating by mode:**
+- `deterministic` — Steps 5, 6, 7, 8 skipped (no AI). Runs 0-4, 9. CASCADE COMPLETE.
+- `full` — full pipeline. Steps 5 and 7 halt at AI seams.
+- `full_recon` — full pipeline + Step 9.5 footing check (tolerance=0).
 
-No JSON file handoff anywhere in this flow.
+No JSON file handoff anywhere in this flow (T7.2). T7.1 still uses file handoff.
 
 ## Starting a New Session
 

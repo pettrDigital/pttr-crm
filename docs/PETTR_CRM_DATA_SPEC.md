@@ -1069,7 +1069,7 @@ Exclude these domains from PHONE_MATCH/EMAIL_MATCH precomputation in `t7_match_c
 
 ### S16.1 Requirements (normative)
 
-**ORPHAN DETECTION**: The cascade MUST run orphan-detection (content-match + phone-window scan) before classifying any lead as a non-conversion. A lead with a real AroFlo job linked by content/phone is flagged system-missed-conversion, never classified as a non-converter.
+**ORPHAN DETECTION**: The cascade MUST run orphan-detection (content-match + phone-window scan) before classifying any lead as a non-conversion. A lead with a real AroFlo job linked by content/phone is flagged system-missed-conversion, never classified as a non-converter. **STATUS (2026-06-21):** Automated orphan detection (Step 6.5) pulled from cascade — content-match scan produces ~7:1 false positives (45 leads matched vs 6 known orphans) because common names and strata-resident names in AroFlo job descriptions match unrelated leads. The 6 known orphans (S16.2, $10,993) are handled manually. The requirement stands; the automated mechanism is deferred until precision improves. See DECISION_LOG.md L4.
 
 **SEAM INTEGRITY**: The AI seam MUST run the validated T7.2 prompt-based model reading full timeline per lead. Substituting a keyword/SQL/BQ shortcut is prohibited. If volume requires batching, batch it.
 
