@@ -274,7 +274,18 @@ async function mapAndCompare(): Promise<{
     JOIN \`${DS}.ferg_csv_classifications\` f ON bm.wc_lead_id = f.wc_lead_id
     JOIN \`${DS}.opportunities\` o ON bm.opp_id = o.opportunity_id
     LEFT JOIN \`${DS}.lead_gate\` g ON bm.opp_id = g.opportunity_id
-    LEFT JOIN \`${DS}.crm_auto_classifications\` ac ON bm.opp_id = ac.opportunity_id
+    LEFT JOIN (
+      -- One classification per opportunity: proposed > determined > bad_verdict, latest run_id
+      SELECT * FROM (
+        SELECT *,
+          ROW_NUMBER() OVER (
+            PARTITION BY opportunity_id
+            ORDER BY CASE action WHEN 'proposed' THEN 1 WHEN 'determined' THEN 2 WHEN 'bad_verdict' THEN 3 ELSE 4 END,
+              updated_at DESC
+          ) AS ac_rn
+        FROM \`${DS}.crm_auto_classifications\`
+      ) WHERE ac_rn = 1
+    ) ac ON bm.opp_id = ac.opportunity_id
     LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` inv ON o.jobnumber = inv.jobnumber
   `)
 
