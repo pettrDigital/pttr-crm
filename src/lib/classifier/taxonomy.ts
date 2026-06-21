@@ -46,7 +46,7 @@ export const TAXONOMY: readonly Leaf[] = [
     stage: 'Not Captured',
     sources: ['gate'],
     t7Set: null,
-    definition: 'Call was answered, then the line failed mid-exchange (reception failure); sole touch on the lead.',
+    definition: 'Call connection failure: line failed mid-exchange (reception failure), garbled/incomprehensible audio, background noise only, or disconnected before any meaningful interaction. Determined from CDR + transcript content. Short calls with no substantive content where the customer did NOT explicitly indicate a wrong number are connection failures, not wrong numbers.',
   },
 
   // ── Unable to Classify (determined) ──
@@ -104,8 +104,8 @@ export const TAXONOMY: readonly Leaf[] = [
     stage: 'Not Quotable',
     sources: ['t7'],
     t7Set: 'NQ_NB',
-    // Source: NQ_NB_SYSTEM_PROMPT line "Wrong Number / Contact Details" (t7-classifier.ts) — renamed, definition verbatim
-    definition: 'Wrong number, disconnected, fax line, or invalid contact details. The lead cannot be reached or was never intended for PETTR.',
+    // Source: NQ_NB_SYSTEM_PROMPT line "Wrong Number" (t7-classifier.ts)
+    definition: 'Caller explicitly indicates they called the wrong number, or the content clearly shows the call was not intended for PETTR. Do NOT use for garbled, incomprehensible, or disconnected calls — those are connection failures (Dropped Call at the gate level). Wrong Number requires positive evidence the caller misdalled or reached the wrong business.',
   },
   {
     name: 'Not Job Related',
@@ -123,7 +123,7 @@ export const TAXONOMY: readonly Leaf[] = [
     sources: ['t7'],
     t7Set: 'NQ_NB',
     // Source: NQ_NB_SYSTEM_PROMPT line "Customer Unresponsive" (t7-classifier.ts)
-    definition: 'We attempted to contact the customer and they did not respond. REQUIRES POSITIVE EVIDENCE: at least one VISIBLE, TRACKABLE outbound follow-up (call, SMS, or email) MUST appear in the timeline. Signal: outbound calls with short durations (0-10s = unanswered), voicemail left, SMS sent with no reply. If NO trackable outbound follow-up is visible in the timeline, use "No Follow-Up Recorded" instead. IMPORTANT: an after-hours OHQ/answering-service handoff does NOT qualify as visible outbound — the tech-mobile follow-up channel is untracked. OHQ leads with no trackable outbound → "No Follow-Up Recorded".',
+    definition: 'PETTR made at least one outbound follow-up (call, SMS, or email) and the customer did not meaningfully respond or re-engage. The outbound must have been unanswered or unreplied. Do NOT use CU where the customer picked up and had a substantive conversation — they were responsive. Classify the actual barrier instead (Price, Capacity, WQoP, Booked Elsewhere, etc.). OHQ/answering-service handoffs do NOT qualify as visible outbound. Signal: outbound calls with 0-10s duration (unanswered), voicemail left, SMS/email sent with no reply.',
   },
   {
     name: 'No Follow-Up Recorded',
@@ -131,7 +131,7 @@ export const TAXONOMY: readonly Leaf[] = [
     sources: ['t7'],
     t7Set: 'NQ_NB',
     // Source: NQ_NB_SYSTEM_PROMPT line "No Follow-Up Recorded" (t7-classifier.ts)
-    definition: 'A valid enquiry where NO TRACKABLE outbound follow-up is visible in the timeline AND no positive evidence of customer choice (not gone-cold-after-contact, not declined-on-price). Describes the DATA STATE, not a cause. Do NOT assert operational failure from absence — it may be a data gap. Use when: no outbound calls/SMS/emails visible after the initial inbound touch. INCLUDES: after-hours OHQ/answering-service leads where the follow-up path is an untracked tech mobile — we cannot see whether contact was made, so the data state is "no follow-up recorded."',
+    definition: 'Customer made an enquiry and PETTR never made an outbound follow-up (call/SMS/email), AND no substantive discussion occurred during the interaction. Use NFUR where the customer submitted a form, left an OHQ message, or had a brief inbound call with no real discussion, and nobody followed up. Do NOT use NFUR where PETTR had a substantive live discussion with the customer about the job, pricing, availability, or next steps — classify the actual barrier instead. INCLUDES: after-hours OHQ leads where follow-up goes to untracked tech mobile.',
   },
   {
     name: 'Tenant / Strata Referral',

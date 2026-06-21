@@ -5,16 +5,12 @@
 
 ### Known Limitations (tech debt, recorded from code review)
 
-**SEAM JSON DIVERGENCE**: The T7.1/T7.2 seam implementation writes
-CC-mode-shaped JSON (flat candidate rows, raw fields) NOT the §3
-contract format (structured `{ lead, candidates[], system_prompt }` /
-`{ formatted_prompt, allowed_set, system_prompt }`). CC reads the flat
-format and applies knowledge of the prompts/allowed-sets from the
-codebase. This works for CC-in-conversation but is NOT drop-in for a
-production engine — the JSON output must be restructured to the §3
-contract before the Cowork/production swap, or the swap won't be
-drop-in. The seam's whole purpose was engine-agnosticism; this
-undermines it until fixed.
+**SEAM JSON DIVERGENCE (RESOLVED 2026-06-21)**: The T7.1 seam still uses
+flat candidate rows in docs/ JSON files. T7.2 uses BQ-table-driven
+architecture (t7_classify_input → t7_classify_staging). Both seams now
+run inline via OpenAI GPT-4.1 API calls with structured outputs, using
+prompt wrappers in `src/lib/ai/prompts.ts` that extend the validated
+system prompts with T72Rationale output schema.
 
 **DUAL-CLASSIFICATION VIEW: DEFERRED**. The staging table
 (`crm_auto_classifications`) exists and is architecturally isolated
@@ -298,16 +294,14 @@ passes it to the seam, receives the output. The input/output contract is
 the same regardless of which engine fills the seam — no rebuild needed
 when the engine changes.
 
-**Current engine**: Claude-as-classifier (CC). Claude Code reads the
-assembled input in-conversation and reasons over it. Free within the
-Claude plan — no paid API, no external service. This is what was used
-for all T7.1 and T7.2 validation.
+**Current engine**: OpenAI GPT-4.1 (`gpt-4.1`), wired 2026-06-21.
+API calls via `src/lib/ai/openai-client.ts`, key from GCP Secret Manager
+(`openai-api-key`). Structured outputs guarantee T72Rationale JSON shape.
+Sequential calls, ~2s each, ~$7 per full run (~600 leads).
 
-**Intended production trigger**: Claude Cowork (desktop agent). Invokes
-the whole function on a schedule via its shell access; Claude reasoning
-fills the AI seam — free within plan, no paid API, no manual pasting.
-Cowork constraints: runs only while the machine is awake and Cowork is
-open (desktop agent, not server-side cron); plan-usage-limited.
+**Prior engine** (superseded): CC-as-classifier (Claude Code reasoning
+in-conversation). Used for all T7.1 and T7.2 validation (89.1% on 367 GT).
+Replaced by OpenAI API to enable automated end-to-end runs.
 
 **CRITICAL**: the FUNCTION is whole (one callable, all 9 steps). The
 TRIGGER (Cowork, manual invocation, or future cron) is a SEPARATE LAYER
@@ -393,10 +387,11 @@ Per-lead line:
   trigger (Cowork, manual, future cron) is a separate layer that calls
   the function — it does not split it. The function is whole; the
   trigger is decided/built AFTER the function exists.
-- **NOT autonomous AI.** The AI seam is CC-mode now — Claude reasons
-  in-conversation. No unsupervised API calls. Cowork (intended trigger)
-  is Claude reasoning with shell access — still within Claude plan, not
-  a paid external API.
+- **NOT a black box.** Every AI classification includes a structured
+  T72Rationale (timeline_summary, decisive_signals, rejected_alternatives,
+  reasoning). Booked leads must quote verbatim labour note content.
+  Validation at Step 8 enforces shape, taxonomy, allowed-set, and
+  source-data tie before any write.
 - **NOT a new orchestrator.** Steps 0-3 ARE the existing orchestrator
   (aroflo-daily-orchestrator). The function calls the orchestrator for
   Steps 0-3, then runs Steps 4-9 on top.

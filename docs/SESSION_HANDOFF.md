@@ -5,7 +5,7 @@ what's built, what's pending, what's next. No requirements live here.
 
 ---
 
-## WHERE THINGS STAND (updated 2026-06-20, end of L3.7 session)
+## WHERE THINGS STAND (updated 2026-06-21)
 
 ### L1a — TAXONOMY LOCKED
 
@@ -97,24 +97,19 @@ Three invalid combos rejected.
 - Step 9 readout: docs/cascade_readout.json.
 - Final distribution in DECISION_LOG.md under "L3 §3".
 
-### L3.5 — ENGINE BUILD + COWORK TRIGGER
+### L3.5 — ENGINE BUILD
 
-- `classifyLead` function written in run-cascade.ts — throws intentionally.
-  CC reasoning is not callable from inside a tsx script. The engine IS the
-  model at the seam, not the function. classifyLead defines the contract
-  (prompt selection, allowed-set derivation, validation) accurately.
-- `validateVerdict` function written and wired into Step 8 — validates each
-  verdict against the classifyLead contract (shape + leaf + cross-check +
-  allowed-set membership).
-- **Cowork wired as the autonomous trigger.** Project "PETTR CRM Lead
-  Classification" set up in Claude Cowork pointing at ~/crm-build. Cowork
-  drives the seam: triggers --step=7, classifies via its own Claude reasoning
-  per the validated prompts, triggers --step=8. Same model class as CC,
-  autonomous execution. First read-only task passed (accurate project summary,
-  correct articulation of S15.1a in own words).
-- The L3.5 "engine call is open" problem is closed at the architecture layer:
-  the engine is the model at the seam, the trigger is Cowork, no headless CC
-  or paid API needed for the current scale.
+- `classifyLead` function in run-cascade.ts — calls OpenAI GPT-4.1 via
+  `src/lib/ai/openai-client.ts`. API key from GCP Secret Manager (`openai-api-key`).
+  Previously threw (CC-mode); replaced with OpenAI API call on 2026-06-21.
+- `validateVerdict` function wired into Step 8 — validates each verdict against
+  the classifyLead contract (shape + leaf + cross-check + allowed-set + Booked
+  labour-note verbatim check).
+- Prompt wrappers in `src/lib/ai/prompts.ts`: extend validated system prompts
+  with T72Rationale output schema for structured outputs.
+- 33 unit tests passing (`src/lib/ai/openai-client.test.ts`): rationale
+  validation, taxonomy checks, allowed-set enforcement, prompt assembly,
+  JSON schema shape, round-trip validation.
 
 ### L3.6 — BQ-TABLE-DRIVEN ARCHITECTURE (commit 2786a36)
 
@@ -171,23 +166,29 @@ Three invalid combos rejected.
 
 ### HOW THE CASCADE RUNS TODAY
 
-**Full reconciliation run:**
-1. `npx tsx scripts/run-cascade.ts --population=reconciliation_1215 --mode=full_recon --skip-sync`
-   Steps 0-3 (spine rebuild), population count = 1215, Step 4 (pre-passes),
-   Step 5 (T7.1 match — halts at AI seam if candidates), Step 6 (write matches),
-   Step 7 (materialise t7_classify_input — halts at AI seam).
-2. Classifier (CC or Cowork) queries sub-batches from BQ, classifies per
-   validated prompts, INSERTs to `t7_classify_staging` with run_id.
-3. Step 8: auto-triggered via launchd watcher (Cowork INSERTs to t7_run_control),
-   or manual `--step=8 --run-id=<id>`. Validates, MERGEs, runs readout + footing.
+**Cascade (production classification):**
+```
+npx tsx scripts/run-cascade.ts --skip-sync [--scope=all]
+```
+Steps 0-9 run without halting. OpenAI GPT-4.1 classifies inline at Steps 5
+(T7.1 match) and 7 (T7.2 classify). ~600 API calls, ~20 min, ~$7/run.
+Default scope: 100 days. Use `--scope=all` for full population.
+Add `--halt-at-seam` to pause at AI seams for manual classification.
+Token usage and timing reported after each phase and at cascade end.
+Every row gets a `run_label` with timestamp, population, scope, mode, engine.
+
+**Reconciliation (compare against dashboard — separate script):**
+```
+npx tsx scripts/run-reconciliation.ts [--csv=data/reconciliation/enriched_leads.csv]
+```
+Loads dashboard CSV to BQ, maps leads to opps, compares cascade output vs
+dashboard classifications, runs footing check, outputs report.
 
 **Mode gating:**
 - `deterministic` — no AI steps (5/6/7/8 skipped). Steps 0-4, 9.
-- `full` — full pipeline, AI seam halts at Steps 5 and 7.
-- `full_recon` — full + Step 9.5 footing check (tolerance=0).
+- `full` — full pipeline. AI seams run inline (or halt with `--halt-at-seam`).
 
-No JSON file handoff (T7.2). T7.1 still uses file handoff.
-Multiple runs coexist by run_id.
+Multiple runs coexist by `run_id`. Filter a specific run by `run_label`.
 
 ### AUTONOMY GAP (conversion-orphan classes — deferred)
 
@@ -196,17 +197,82 @@ Multiple runs coexist by run_id.
 
 ### OUTSTANDING — NEXT STEPS (priority order)
 
-1. **First full end-to-end run** with --population=reconciliation_1215
-   --mode=full_recon. Verify spine rebuild, population count, footing check,
-   AI seam flow, and Step 8 auto-trigger all work together.
-2. **Wire OpenAI API** as classification engine (replacing CC manual).
-   Same contract: read from t7_classify_input, write to t7_classify_staging.
-3. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable for Fergus.
-4. **AroFlo API correspondence-coverage verification** (spec S2.10).
-5. **Carried items**: T7.1 backward window, clustering window widening,
+1. **Evaluate first OpenAI run** — compare GPT-4.1 output against CC baseline
+   (538 leads, run_id `cc_recon_2026_06_20_1750`). Check NFUR/CU redistribution.
+2. **Run reconciliation** against dashboard CSV after cascade run completes.
+3. **Lock footing manifest** — new bucket counts from first run with Repeat leads.
+4. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable.
+5. **AroFlo API correspondence-coverage verification** (spec S2.10).
+6. **Carried items**: T7.1 backward window, clustering window widening,
    conflation guard by-list, payment-regex fix, vw_lead_enriched fanout.
 
-### DONE (this session — 2026-06-20 / 2026-06-21)
+### L5 — OPENAI ENGINE + REPEAT LEADS + PROMPT REFINEMENT (2026-06-21)
+
+**OpenAI GPT-4.1 engine:**
+- `src/lib/ai/openai-client.ts`: API client, Secret Manager key retrieval,
+  JSON schemas for structured outputs, token usage tracking (`getTokenUsage()`).
+- `src/lib/ai/prompts.ts`: prompt wrappers extending validated system prompts
+  with T72Rationale output schema.
+- `classifyLead()` throw replaced with OpenAI API call.
+- `--halt-at-seam` flag: opt-in to preserve old CC-mode halt behavior.
+- `runT71MatchInline()`: per-lead T7.1 matching via OpenAI.
+- `runT72ClassifyInline()`: per-lead T7.2 classification in batches of 50.
+
+**WC Repeat leads included:**
+- `build_opportunities.sql`: `lead_status = 'Unique'` filter removed. Repeat
+  leads enter the graph via phone/email. Cascade test exclusion (test_numbers,
+  test_wc_leads, internal emails) replaces reliance on WC's is_test_lead alone.
+- `vw_leads_unified.sql`: name enrichment join also includes Repeat leads.
+
+**Cascade/reconciliation separated:**
+- `scripts/run-reconciliation.ts`: standalone comparison script. Loads CSV from
+  `data/reconciliation/enriched_leads.csv` to BQ, compares against existing
+  cascade output, runs footing check, outputs report. Does not run the cascade.
+- `run-config.ts`: removed `reconciliation_1215` scope, `full_recon` mode,
+  `footing` step flag. Cascade is production-only.
+
+**Determined outcomes written (Step 3.5):**
+- Gate-determined leads (C&I, BC, JP, Unanswered, Dropped, UTC, ABR) written
+  to `crm_auto_classifications` with `action='determined'`, `confidence=1.0`.
+  Every lead now has a row — no join to `lead_gate` needed.
+
+**T7.1 rationale persisted:**
+- Full `T71Rationale` JSON stored in `rationale` column on `crm_account_exclusions`
+  and `crm_t7_match_queue` (candidates considered, signals, reasoning).
+
+**Step 8 bad verdict handling:**
+- Bad verdicts flagged with `action='bad_verdict'` and skipped — good verdicts
+  written. No more atomic halt on single failure. Bad verdicts preserved in
+  `crm_auto_classifications` with error in `reasoning` column for review.
+
+**Classification prompt refinement (based on CC data analysis):**
+- **NQ_NB_SYSTEM_PROMPT**: added Substantive Discussion Rule — if PETTR and
+  customer had a real conversation, classify by the barrier (Price, Capacity,
+  WQoP, etc.), not NFUR or CU. NFUR = no outbound AND no discussion.
+  CU = outbound made, customer did not respond. Added Pricing Signals
+  override. Refined Wrong Number (explicit misdial only, not garbled calls).
+  Rules reference `has_outbound` pre-pass fact directly.
+- **BOOKED_SYSTEM_PROMPT**: added Rationale Quality section — must reference
+  specific labour note content, not generic boilerplate. Good/bad examples.
+- **taxonomy.ts**: definitions updated for NFUR, CU, Wrong Number, Dropped Call
+  to match refined prompt guidance. No structural changes (same 27 leaves).
+
+**Output improvements:**
+- `wc_leads_json` column: all WC lead IDs associated with each opportunity,
+  stored as JSON string on `crm_auto_classifications`. No join to `opportunities`
+  needed to see which WC leads belong to each classification.
+- `run_label` column: human-readable label on every row — timestamp, population,
+  scope, mode, engine. Filter a specific run: `WHERE run_label LIKE '2026-06-21%'`.
+- Token usage tracking: prompt/completion/total tokens and estimated cost reported
+  after T7.1, T7.2, and cascade complete.
+
+**Test/infra:**
+- 70 unit tests passing (0 API calls).
+- `ferg_csv_classifications` updated to 1,245 rows from `enriched_leads-10.csv`.
+- `data/reconciliation/` directory for dashboard CSV exports.
+- Dependencies: `openai`, `@google-cloud/secret-manager`.
+
+### DONE (prior sessions — 2026-06-20)
 
 - L1a: taxonomy.ts locked, 7 consumers repointed
 - L1b: T7.2 seam rewired to read from taxonomy.ts, byte-diff clean

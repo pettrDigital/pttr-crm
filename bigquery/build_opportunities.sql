@@ -154,6 +154,15 @@ AND NOT REGEXP_CONTAINS(anp.extracted_phone, r'\+618583');
 -- These enter the graph as 'W'-prefixed nodes. The clustering algorithm
 -- naturally handles ENRICH (clusters with existing events via phone/email)
 -- vs SEED (forms new standalone components).
+--
+-- Includes BOTH Unique and Repeat leads (2026-06-21 decision). WC "Repeat"
+-- just means the same contact called/submitted again — the graph clusters
+-- multiple touches into one opportunity via phone/email edges. Excluding
+-- Repeats dropped ~100 leads from reconciliation coverage.
+--
+-- Test/internal exclusion uses the cascade's canonical test lists (test_numbers,
+-- test_wc_leads, internal email addresses) rather than relying solely on WC's
+-- is_test_lead flag, which misses some internal test calls (e.g. US mobile).
 CREATE TEMP TABLE wc_events AS
 SELECT
   CAST(wc.lead_id AS STRING) AS event_id,
@@ -175,9 +184,18 @@ FROM `pttr-taskdata.gd_WhatConverts.all_leads_enriched` wc
 LEFT JOIN (
   SELECT DISTINCT wc_lead_id FROM spine_events WHERE wc_lead_id IS NOT NULL
 ) existing ON wc.lead_id = existing.wc_lead_id
-WHERE wc.lead_status = 'Unique'
-  AND wc.spam = FALSE
+WHERE wc.spam = FALSE
   AND wc.is_test_lead = FALSE
+  -- Cascade test exclusion: test_numbers (staff + test phones)
+  AND COALESCE(wc.norm_phone, '') NOT IN (SELECT phone_e164 FROM `pttr-taskdata.ds_crm.test_numbers`)
+  AND COALESCE(wc.norm_contact_phone, '') NOT IN (SELECT phone_e164 FROM `pttr-taskdata.ds_crm.test_numbers`)
+  -- Cascade test exclusion: test_wc_leads (manually curated WC lead IDs)
+  AND wc.lead_id NOT IN (SELECT wc_lead_id FROM `pttr-taskdata.ds_crm.test_wc_leads`)
+  -- Cascade test exclusion: internal email addresses
+  AND LOWER(COALESCE(wc.contact_email_address, '')) NOT IN (
+    'alexm@mrwasher.com.au', 'fergusg@mrwasher.com.au', 'francesb@mrwasher.com.au',
+    'gordo@mrwasher.com.au', 'matt@quinnmarketing.com.au'
+  )
   AND existing.wc_lead_id IS NULL;
 
 -- ====== STEP 2: Contact-point mapping ======

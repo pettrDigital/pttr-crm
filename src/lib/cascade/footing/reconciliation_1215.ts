@@ -15,17 +15,17 @@ export interface FootingManifest {
   tolerance: number  // per bucket — 0 means exact match required
 }
 
-// Updated 2026-06-20: test_excluded 109→116, mapped 1095→1088.
-// 12 leads (7 net) newly excluded by email-domain and test-list rules that
-// were expanded since the original footing: 6× alex m (alexm@mrwasher),
-// 2× Fran (francesb@mrwasher), 3× matt@quinnmarketing (test_wc_leads),
-// 1× Fergus (fergusg@mrwasher, JN143006 Open/$0 internal test job).
-// All genuine internal identities. Zero converters. Total unchanged at 1215.
+// Updated 2026-06-21: population expanded from 1,215 to 1,245 (enriched_leads-10.csv).
+// WC Repeat leads now included in graph clustering (build_opportunities.sql).
+// Bucket counts TBD after first run with Repeat leads — tolerance set to
+// informational-only until new buckets are footed and locked.
+//
+// Prior manifest (2026-06-20): {116, 1088, 8, 3} = 1215, tolerance=0.
 export const RECONCILIATION_1215_MANIFEST: FootingManifest = {
-  test_excluded: 116,
-  mapped: 1088,
-  no_identity: 8,
-  spine_gap: 3,
-  total: 1215,
-  tolerance: 0,
+  test_excluded: 116,   // TBD: will change with Repeat leads (some are test)
+  mapped: 1088,         // TBD: Repeat leads will increase this
+  no_identity: 8,       // TBD: may change
+  spine_gap: 3,         // TBD: may change
+  total: 1245,
+  tolerance: 999,       // TEMPORARY: informational until new buckets footed
 }

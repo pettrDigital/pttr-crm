@@ -1,8 +1,11 @@
 # WC Reconciliation Runbook
 
 **Purpose**: Run the WC reconciliation end-to-end through the cascade function,
-producing a complete 1,215-lead comparison against Fergus's CSV. This runbook
+producing a complete 1,245-lead comparison against Fergus's CSV. This runbook
 prevents the potholes from the 2026-06-20 session.
+
+**Updated 2026-06-21**: Population 1,215→1,245 (WC Repeat leads now included).
+Engine: OpenAI GPT-4.1 (replaces CC-as-classifier). Source CSV: `enriched_leads-10.csv`.
 
 **Canonical spec**: `docs/PETTR_CRM_DATA_SPEC.md` (S0-S18). This runbook is
 operational procedure — requirements live in the spec.
@@ -69,23 +72,19 @@ Run the orchestrator (Step 0) or confirm the last sync is recent enough.
 
 ## 2. SCOPE
 
-### 2a. Reconciliation scope = the 1,215 CSV population
+### 2a. Reconciliation scope = the 1,245 CSV population
 
-The CSV is `ferg_csv_classifications` (1,215 rows, one per WC lead_id).
-The reconciliation compares T7's classification against Fergus's `after_*`
-fields on THIS population — not the full CRM history.
+The CSV is `ferg_csv_classifications` (1,245 rows, one per WC lead_id).
+Source file: `docs/enriched_leads-10.csv` (updated 2026-06-21). Includes
+both WC Unique and Repeat leads. The reconciliation compares T7's
+classification against the dashboard's `after_*` fields on THIS population.
 
-**How to scope the run**: the function's `--scope` flag controls the
-population for Steps 1-3 (rebuild) and Step 4 (pre-passes). For the
-reconciliation, either:
-- Use `--scope all` for Steps 0-3 (rebuild full tables — these are shared
-  infrastructure), then SCOPE Step 7 to only the 1,095 mapped reconciliation
-  leads (filter the `t7_recon_classify_input` table or equivalent).
-- OR: build a `--scope reconciliation` flag that filters to the CSV population.
-
-**Do NOT classify the full 22,619 opp history** at Step 7 if the goal is the
-reconciliation. That's a separate concern. The reconciliation classifies
-only the 1,095 mapped leads.
+**How to scope the run**:
+```
+npx tsx scripts/run-cascade.ts --population=reconciliation_1215 --mode=full_recon --skip-sync
+```
+The `reconciliation_1215` scope uses the `reconMappedOppsCTE` 3-way join
+to filter Steps 7-8 to only the mapped reconciliation leads.
 
 ### 2b. The 3-way join is MANDATORY
 
@@ -100,14 +99,12 @@ touch in their opportunity cluster. This caused the 602→548 bug on 2026-06-20.
 Always use all three methods, deduplicated to one opportunity per lead
 (priority: primary > array > phone).
 
-### 2c. Test exclusion (109 leads)
+### 2c. Test exclusion
 
-Excluded by-list-only (S15.1):
-- Internal email domains (`@mrwasher.com.au`, `@electriciantotherescue.com.au`,
-  `@plumbertotherescue.com.au`, `@quinnmarketing.com.au`)
-- `test_numbers` table (16 entries)
-- WC `is_test_lead = TRUE`
-- `test_wc_leads` table
+Excluded by-list-only (S15.1). Applied at two levels:
+- **Graph entry** (`build_opportunities.sql`): WC `spam`, `is_test_lead`,
+  plus cascade's `test_numbers`, `test_wc_leads`, internal email addresses.
+- **Footing check** (`testExclusionWhereClause`): same lists via SQL fragment.
 
 These are held out from comparison — not counted as disagreements.
 
@@ -118,15 +115,20 @@ These are held out from comparison — not counted as disagreements.
 These numbers are the verified baseline from 2026-06-20. Any deviation is a
 bug to investigate BEFORE proceeding — not a "new number" to accept.
 
-### 3a. Population funnel (foots to 1,215)
+### 3a. Population funnel (foots to 1,245)
 
 | Bucket | Expected | Investigate if |
 |---|---|---|
-| Test excluded | 109 | Changes by >2 (new test leads added/removed) |
-| Mapped (3-way join) | 1,095 | Any change (join logic or opp rebuild shifted IDs) |
-| No identity | 8 | Changes (these are zero-phone zero-email leads) |
-| Spine gap | 3 | Changes |
-| **Total** | **1,215** | Must always foot exactly |
+| Test excluded | TBD | First run with Repeat leads will establish baseline |
+| Mapped (3-way join) | TBD | Repeat leads should increase this (63 had matching opps) |
+| No identity | TBD | May change |
+| Spine gap | TBD | May change |
+| **Total** | **1,245** | Must always foot exactly |
+
+**Note**: Bucket counts are TBD until first run with Repeat leads included
+(2026-06-21 change). Prior manifest was {116, 1088, 8, 3} = 1,215.
+After first run, lock new bucket counts into `reconciliation_1215.ts`
+and set tolerance back to 0.
 
 ### 3b. Classification breakdown (1,095 mapped)
 
@@ -252,16 +254,12 @@ identifying specific reasons, the agreement rate on unambiguous categories
 
 ## 6. POST-RUN CHECKS
 
-1. **Footing**: 1,215 = 109 + 1,095 + 8 + 3. Exact.
+1. **Footing**: 1,245 = TBD buckets. Exact (after first run establishes baseline).
 2. **Zero unresolved**: every mapped lead has a classification or system-miss flag.
 3. **System-miss count**: 6 (same leads). If different, investigate.
-4. **NFUR/CU count**: should be LOWER than 2026-06-20 (190+97=287). If still
-   ~287, the keyword classifier is still running.
-5. **Per-category agreement with Fergus**: check Spam (should be >73%),
-   Wrong Number (should be >35%), OSA (should be >24%). If lower, investigate.
+4. **NFUR/CU count**: should be LOWER than 2026-06-20 (190+97=287).
+5. **Per-category agreement with dashboard**: check Spam, Wrong Number, OSA.
 6. **Orphan $ total**: $10,993 (verified from `vw_job_invoiced`). Same 6 jobs.
-   If different, check which jobs the orphan scan attributed — it must use
-   date proximity, not invoiced amount (S5.3 item 9).
 
 ---
 

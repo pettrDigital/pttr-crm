@@ -1,5 +1,10 @@
 # T7 vs WC/Fergus — Complete Reconciliation
 
+> **STALE (2026-06-21)**: This document is from the 2026-06-20 run which used a
+> BQ keyword classifier (not the validated T7.2 model). Population was 1,215;
+> now updated to 1,245 (Repeat leads included). Engine changed to OpenAI GPT-4.1.
+> This document will be regenerated after the first OpenAI-powered end-to-end run.
+
 **Date**: 2026-06-20
 **Population**: 1,215 CSV leads (ferg_csv_classifications), all bucketed, zero unexplained
 **Engine**: Gate-determined stages (476 leads, reliable) + BQ keyword-approximated

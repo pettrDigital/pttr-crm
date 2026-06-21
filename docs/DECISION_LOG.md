@@ -481,3 +481,93 @@ commit, file). State lives in the spec; this log records how it got there.
   → This is the same conclusion reached previously — re-verified with evidence.
 
 ---
+
+## 2026-06-21 — L5: OpenAI GPT-4.1 engine + Repeat leads
+
+### DECISION: Replace CC-as-classifier with OpenAI GPT-4.1
+
+- **What**: `classifyLead()` in run-cascade.ts now calls OpenAI GPT-4.1 via API
+  instead of throwing. New files: `src/lib/ai/openai-client.ts` (client),
+  `src/lib/ai/prompts.ts` (prompt wrappers). API key from GCP Secret Manager.
+- **Why**: CC-as-classifier required manual intervention at AI seams (halt, read
+  in conversation, write back). OpenAI API enables end-to-end automated runs.
+  Owner decision (Ric Gordon, 2026-06-21).
+- **Validation**: 33 unit tests passing (mocked, 0 API calls). Accuracy validation
+  against CC's 89.1% benchmark pending first production run.
+- **New flag**: `--halt-at-seam` (opt-in) preserves old halt behavior. Default:
+  run through with OpenAI inline.
+- → `src/lib/ai/openai-client.ts`, `src/lib/ai/prompts.ts`, `scripts/run-cascade.ts`
+
+### DECISION: Include WC Repeat leads in graph clustering
+
+- **What**: Removed `lead_status = 'Unique'` filter from `build_opportunities.sql`
+  (line 178) and `vw_leads_unified.sql` (line 278). WC Repeat leads now enter the
+  graph and cluster into existing opportunities via phone/email edges.
+- **Why**: WC "Repeat" = same customer calling again. The graph should cluster all
+  touches into one opportunity regardless of WC's repeat flag. Excluding them dropped
+  ~100 leads from reconciliation coverage (100 Repeats unmapped, 63 of which had
+  phone/email matching existing opps).
+- **Test exclusion**: Cascade's canonical test lists (`test_numbers`, `test_wc_leads`,
+  internal email addresses) applied in the SQL filter, replacing reliance on WC's
+  `is_test_lead` flag alone. WC missed some internal test calls (e.g. +19174944379).
+- → `bigquery/build_opportunities.sql`, `bigquery/vw_leads_unified.sql`
+
+### DONE: ferg_csv_classifications updated to 1,245 rows
+
+- **What**: Loaded `docs/enriched_leads-10.csv` (fresh dashboard export, 2026-06-21)
+  into `ds_crm.ferg_csv_classifications`. 21 additional columns preserved.
+- **Why**: Prior table was 1,215 rows (stale snapshot). New export has 30 additional
+  leads and current dashboard classifications.
+- **Footing**: Manifest tolerance set to informational (999) until first run with
+  Repeat leads produces new bucket counts to lock.
+- → `src/lib/cascade/footing/reconciliation_1215.ts`, `src/lib/cascade/run-config.ts`
+
+### DECISION: Separate cascade from reconciliation
+
+- **What**: `run-cascade.ts` no longer handles reconciliation. New standalone
+  `scripts/run-reconciliation.ts` loads the dashboard CSV from
+  `data/reconciliation/enriched_leads.csv`, compares against existing cascade
+  output, runs footing check, and outputs the reconciliation report.
+- **Why**: Cascade and reconciliation are different concerns. The cascade
+  classifies leads; reconciliation compares classifications against a baseline.
+  Coupling them via `--population=reconciliation_1215` and `--mode=full_recon`
+  added conditional branching to Step 7, population count halts, and a footing
+  step that only applied to one scope.
+- **Removed from cascade**: `reconciliation_1215` scope, `full_recon` mode,
+  `footing` step flag, Step 9.5, `reconMappedOppsCTE` import, population count
+  validation against 1245.
+- **Kept as library code** (reused by reconciliation script): `wc-mapping.ts`,
+  `test-exclusion.ts`, `footing/check.ts`, `footing/reconciliation_1215.ts`.
+- → `scripts/run-reconciliation.ts` (new), `scripts/run-cascade.ts`,
+  `src/lib/cascade/run-config.ts`
+
+### DECISION: Refine NFUR/CU classification prompt rules
+
+- **What**: Restructured NQ_NB_SYSTEM_PROMPT decision rules based on analysis
+  of CC's 538 classifications. Added "Substantive Discussion Rule" — if PETTR
+  and customer had a real conversation, classify by the barrier, not NFUR/CU.
+  Added "Pricing Signals" override. Refined Wrong Number (explicit misdial only).
+  Updated taxonomy.ts definitions for NFUR, CU, Wrong Number, Dropped Call.
+- **Why**: CC data showed NFUR (121 leads) and CU (88 leads) absorbing leads
+  where substantive conversations happened. 65 NFUR leads had 5-15 minute live
+  calls. Many CU leads had extended outbound conversations where the customer
+  WAS responsive. Price/MCO had only 2 leads despite pricing being discussed
+  in many calls. NFUR and CU are absence classifications — they should only
+  apply when there's no substantive interaction to classify.
+- **Principle**: If a discussion happened, NFUR can't be true (PETTR did engage)
+  and CU can't be true (the customer did respond). Classify by the barrier.
+- → `src/lib/classifier/t7-classifier.ts`, `src/lib/classifier/taxonomy.ts`
+
+### DONE: Output improvements
+
+- **Determined writes (Step 3.5)**: gate-determined leads written to
+  `crm_auto_classifications` with `action='determined'`. Every lead has a row.
+- **T7.1 rationale persisted**: full T71Rationale JSON on match tables.
+- **Step 8 bad verdict handling**: skip and flag (`action='bad_verdict'`)
+  instead of atomic halt.
+- **`wc_leads_json` column**: all WC lead IDs per opportunity on classifications.
+- **`run_label` column**: timestamp + population + scope + mode + engine on every row.
+- **Token tracking**: cumulative prompt/completion/total tokens and cost estimate.
+- → `scripts/run-cascade.ts`, `src/lib/ai/openai-client.ts`
+
+---

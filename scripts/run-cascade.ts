@@ -11,35 +11,25 @@
  *
  * HOW THE CASCADE RUNS (classification flow):
  *
- *   1. Run Step 7:
- *        npx tsx scripts/run-cascade.ts --step=7
- *      Materialises ds_crm.t7_classify_input (BQ table) and exits.
+ *   DEFAULT (end-to-end with OpenAI GPT-4.1):
+ *     npx tsx scripts/run-cascade.ts --skip-sync
+ *   Steps 0-9: rebuild spine, match, classify (OpenAI inline), write, readout.
  *
- *   2. Classify by querying sub-batches from BQ:
- *        SELECT * FROM ds_crm.t7_classify_input
- *        WHERE gate_stage = 'judgement:NQ/NB'
- *        LIMIT 50 OFFSET <N*50>
- *      For each row, the classifier (CC in session, or Cowork) applies
- *      NQ_NB_SYSTEM_PROMPT or BOOKED_SYSTEM_PROMPT, emits the locked
- *      T72Rationale JSON shape, and INSERTs into ds_crm.t7_classify_staging
- *      with the current run_id. Repeat until all leads classified.
+ *   MANUAL (--halt-at-seam):
+ *     npx tsx scripts/run-cascade.ts --halt-at-seam --step=7
+ *   Halts at AI seams for manual classification. Resume with --step=6 or --step=8.
  *
- *   3. Run Step 8:
- *        npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>
- *      Reads staging, validates via validateVerdict, batch-MERGEs to
- *      crm_auto_classifications, deletes staging rows for that run_id.
- *
- *   4. Run Step 9: readout (unchanged).
- *
- * No JSON file handoff anywhere in this flow.
+ * Reconciliation (comparing cascade output vs dashboard CSV) is a SEPARATE
+ * script: npx tsx scripts/run-reconciliation.ts
  *
  * Usage:
  *   npx tsx scripts/run-cascade.ts [--scope all|30d|90d] [--skip-sync]
- *     [--population P]  (L2 scope: live_post_dec2025|reconciliation_1215|historical_pre_dec2025)
- *     [--mode M]        (L2 mode: full|full_recon|deterministic)
+ *     [--population P]  (L2 scope: live_post_dec2025|historical_pre_dec2025)
+ *     [--mode M]        (L2 mode: full|deterministic)
  *     [--step N]        (run from step N, skip earlier steps)
- *     [--run-id ID]     (required for --step=8: identifies the staging batch)
+ *     [--run-id ID]     (required for --step=8 when using --halt-at-seam)
  *     [--dry-run]       (readout only, no writes)
+ *     [--halt-at-seam]  (pause at AI seams instead of running OpenAI inline)
  */
 
 import { BigQuery } from '@google-cloud/bigquery'
@@ -51,19 +41,23 @@ import {
 } from '../src/lib/classifier/taxonomy'
 import {
   BOOKED_SYSTEM_PROMPT, NQ_NB_SYSTEM_PROMPT,
+  MATCH_SYSTEM_PROMPT,
   NQ_NB_ALLOWED_NO_OUTBOUND,
 } from '../src/lib/classifier/t7-classifier'
 import { validateT72Rationale, validateT71Rationale } from '../src/lib/cascade/rationale'
 import type { T72Rationale, T71Rationale } from '../src/lib/cascade/rationale'
-import { reconMappedOppsCTE } from '../src/lib/cascade/wc-mapping'
+import {
+  callOpenAI,
+  getTokenUsage, resetTokenUsage,
+  T72_RATIONALE_JSON_SCHEMA,
+  T71_MATCH_JSON_SCHEMA,
+} from '../src/lib/ai/openai-client'
+import {
+  buildT72SystemPrompt, buildT72UserMessage,
+  buildT71UserMessage,
+} from '../src/lib/ai/prompts'
 import { resolveRunConfig, scopeWhereClause, logRunStart } from '../src/lib/cascade/run-config'
 import type { Scope, Mode, RunConfig } from '../src/lib/cascade/run-config'
-import { runFootingCheck } from '../src/lib/cascade/footing/check'
-import type { ObservedCounts } from '../src/lib/cascade/footing/check'
-// orphan-detect.ts: selectClosestCandidate exists but Step 6.5 is pulled from
-// the automated cascade — name-matching against AroFlo free-text produces ~7:1
-// false positives (45 leads found vs 6 known orphans). See DECISION_LOG.md.
-import { testExclusionWhereClause } from '../src/lib/cascade/test-exclusion'
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const PROJECT_ID = 'pttr-taskdata'
@@ -137,6 +131,104 @@ async function step3_leadGate(): Promise<void> {
     WHERE o.opportunity_id NOT IN (SELECT DISTINCT opportunity_id FROM \`${DS}.lead_timeline\`)
   `)
   console.log('STEP 3: LEAD_GATE — done')
+}
+
+// ─── STEP 3.5: WRITE DETERMINED CLASSIFICATIONS ───────────────────
+// Gate-determined leads (C&I, BC, JP, Unanswered, Dropped, UTC, ABR)
+// are written to crm_auto_classifications so every lead has a row in
+// one table. action='determined', confidence=1.0, no rationale needed.
+
+const DETERMINED_GATE_MAP: Record<string, { sub_status: string; stage: string; reasoning: string }> = {
+  'determined:Completed and Invoiced': {
+    sub_status: 'Completed and Invoiced',
+    stage: 'Booked',
+    reasoning: 'Determined: invoiced_total_ex > 0',
+  },
+  'determined:account_billing_review': {
+    sub_status: 'Account Billing Review',
+    stage: 'Booked',
+    reasoning: 'Determined: Archived + $0 + Account terms',
+  },
+  'determined:Booking Cancelled': {
+    sub_status: 'Booking Cancelled',
+    stage: 'Booked',
+    reasoning: 'Determined: job_status=Archived + $0 invoiced',
+  },
+  'determined:Job Pending': {
+    sub_status: 'Job Pending',
+    stage: 'Booked',
+    reasoning: 'Determined: job_status=Open + $0 invoiced',
+  },
+  'determined:Not Captured / Unanswered Call': {
+    sub_status: 'Unanswered Call',
+    stage: 'Not Captured',
+    reasoning: 'Determined: no live human connection (CDR)',
+  },
+  'determined:Not Captured / Dropped Call': {
+    sub_status: 'Dropped Call',
+    stage: 'Not Captured',
+    reasoning: 'Determined: reception failure, no substantive exchange',
+  },
+  'determined:Unable to Classify': {
+    sub_status: 'Unable to Classify',
+    stage: 'Unable to Classify',
+    reasoning: 'Determined: touch exists but zero readable content',
+  },
+}
+
+async function step3_5_writeDetermined(scope: string, runId: string, runLabel: string): Promise<number> {
+  console.log('STEP 3.5: WRITE DETERMINED — gate-determined leads to crm_auto_classifications...')
+
+  const dateFilter = scope === 'all' ? '' :
+    `AND DATE(o.opportunity_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${scope === '30d' ? 30 : scope === '90d' ? 90 : 100} DAY)`
+
+  const rows = await runQuery<{ opportunity_id: string; wc_lead_id: number; gate_stage: string; wc_leads_json: string }>(`
+    SELECT o.opportunity_id, o.wc_lead_id, g.gate_stage,
+      TO_JSON_STRING(o.wc_leads) AS wc_leads_json
+    FROM \`${DS}.opportunities\` o
+    JOIN \`${DS}.lead_gate\` g ON o.opportunity_id = g.opportunity_id
+    WHERE g.gate_stage LIKE 'determined:%'
+      ${dateFilter}
+  `)
+
+  if (rows.length === 0) {
+    console.log('  No determined leads found')
+    return 0
+  }
+
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
+  const CHUNK = 50
+  let written = 0
+
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK)
+    const values = chunk.map(r => {
+      const mapping = DETERMINED_GATE_MAP[r.gate_stage]
+      if (!mapping) return null
+      return `STRUCT<opportunity_id STRING, wc_lead_id INT64, wc_leads_json STRING, gate_stage STRING, sub_status STRING, stage STRING, confidence FLOAT64, reasoning STRING, source_quote STRING, rationale STRING, jobnumber STRING, run_id STRING, run_label STRING, has_outbound BOOL, has_internal_touch BOOL, is_auto BOOL, action STRING, created_at TIMESTAMP, updated_at TIMESTAMP>(
+        '${r.opportunity_id}', ${r.wc_lead_id || 'NULL'}, '${esc(r.wc_leads_json || '[]')}', '${r.gate_stage}', '${esc(mapping.sub_status)}', '${mapping.stage}', 1.0, '${esc(mapping.reasoning)}', CAST(NULL AS STRING), CAST(NULL AS STRING), CAST(NULL AS STRING), '${runId}', '${esc(runLabel)}', CAST(NULL AS BOOL), CAST(NULL AS BOOL), TRUE, 'determined', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
+    }).filter(Boolean).join(',\n        ')
+
+    if (!values) continue
+
+    await runScript(`
+      MERGE \`${DS}.crm_auto_classifications\` T
+      USING (SELECT * FROM UNNEST([${values}])) S
+      ON T.opportunity_id = S.opportunity_id
+        AND COALESCE(T.run_id, '') = COALESCE(S.run_id, '')
+      WHEN MATCHED THEN UPDATE SET
+        sub_status = S.sub_status, stage = S.stage,
+        confidence = S.confidence, reasoning = S.reasoning,
+        wc_leads_json = S.wc_leads_json, run_label = S.run_label,
+        action = S.action, updated_at = CURRENT_TIMESTAMP()
+      WHEN NOT MATCHED THEN INSERT (opportunity_id, wc_lead_id, wc_leads_json, gate_stage, sub_status, stage, confidence, reasoning, source_quote, rationale, jobnumber, run_id, run_label, has_outbound, has_internal_touch, is_auto, action, created_at, updated_at)
+        VALUES (S.opportunity_id, S.wc_lead_id, S.wc_leads_json, S.gate_stage, S.sub_status, S.stage, S.confidence, S.reasoning, S.source_quote, S.rationale, S.jobnumber, S.run_id, S.run_label, S.has_outbound, S.has_internal_touch, S.is_auto, S.action, S.created_at, S.updated_at)
+    `)
+    written += chunk.length
+  }
+
+  console.log(`  Written ${written} determined classifications (action='determined')`)
+  return written
 }
 
 // ─── STEP 4: PRE-PASSES ────────────────────────────────────────────
@@ -336,6 +428,8 @@ async function step6_writeMatches(): Promise<void> {
           continue
         }
 
+        const rationaleStr = (m.rationale || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
+
         if (job.customer_type === 'Account') {
           // Account match → crm_account_exclusions
           await runScript(`
@@ -348,17 +442,19 @@ async function step6_writeMatches(): Promise<void> {
             WHEN NOT MATCHED THEN INSERT (
               opportunity_id, is_account, provenance, synced_at, jobnumber,
               matched_phone, account_client, match_tier, invoiced_ex,
-              days_lead_to_job, needs_audit, review_recommended, t7_confidence, t7_evidence
+              days_lead_to_job, needs_audit, review_recommended, t7_confidence, t7_evidence, rationale
             ) VALUES (
               S.opportunity_id, TRUE, 'auto:t7_match', CURRENT_TIMESTAMP(), S.jobnumber,
               NULLIF(S.matched_phone, ''), '${job.client_name.replace(/'/g, "\\'")}', 'auto:t7_match',
               ${job.invoiced}, ${opp.days}, TRUE, TRUE, ${m.confidence},
-              '${(m.evidence || '').replace(/'/g, "\\'")}'
+              '${(m.evidence || '').replace(/'/g, "\\'")}',
+              '${rationaleStr}'
             )
             WHEN MATCHED THEN UPDATE SET
               opportunity_id = S.opportunity_id,
               t7_confidence = ${m.confidence},
               t7_evidence = '${(m.evidence || '').replace(/'/g, "\\'")}',
+              rationale = '${rationaleStr}',
               review_recommended = TRUE,
               synced_at = CURRENT_TIMESTAMP()
           `)
@@ -374,7 +470,7 @@ async function step6_writeMatches(): Promise<void> {
               opportunity_id, jobnumber, matched_phone, customer_type, client_name,
               match_tier, t7_confidence, t7_evidence, t7_corroboration,
               needs_audit, review_recommended, invoiced_ex, days_lead_to_job,
-              wc_lead_id, created_at
+              wc_lead_id, created_at, rationale
             ) VALUES (
               '${opp.opportunity_id}', S.jobnumber, ${opp.phone ? `'${opp.phone}'` : 'NULL'},
               '${job.customer_type}', '${job.client_name.replace(/'/g, "\\'")}',
@@ -382,12 +478,14 @@ async function step6_writeMatches(): Promise<void> {
               '${(m.evidence || '').replace(/'/g, "\\'")}',
               '${(m.corroboration || '').replace(/'/g, "\\'")}',
               TRUE, TRUE, ${job.invoiced}, ${opp.days},
-              S.wc_lead_id, CURRENT_TIMESTAMP()
+              S.wc_lead_id, CURRENT_TIMESTAMP(),
+              '${rationaleStr}'
             )
             WHEN MATCHED THEN UPDATE SET
               opportunity_id = '${opp.opportunity_id}',
               t7_confidence = ${m.confidence},
               t7_evidence = '${(m.evidence || '').replace(/'/g, "\\'")}',
+              rationale = '${rationaleStr}',
               review_recommended = TRUE
           `)
           console.log(`    → crm_t7_match_queue (COD, ${job.client_name})`)
@@ -422,16 +520,10 @@ async function step7_classify(prePasses: PrePassResult[], config?: RunConfig): P
   // Pre-pass facts: has_outbound (CU/NFUR gate), has_internal_touch (NJR gate).
   // Job-side content: folded into full_timeline as labelled rows (option (a) — same
   //   narrative shape the validated 89.1% model reads, no prompt template change).
-  // Population scoping:
-  //   - reconciliation_1215: scoped via reconMappedOppsCTE JOIN
-  //   - live_post_dec2025: scoped via scopeWhereClause (era boundary)
-  //   - historical_pre_dec2025: never reached (t7_classify=false)
-  const isRecon = config?.scope === 'reconciliation_1215'
-  const reconCTE = isRecon ? reconMappedOppsCTE(DS) : null
+  // Population scoping via scopeWhereClause (era boundary).
   const populationWhere = config ? scopeWhereClause(config.scope, DS) : 'TRUE'
   await runScript(`
     CREATE OR REPLACE TABLE \`${DS}.t7_classify_input\` AS
-    ${reconCTE ? `WITH ${reconCTE}` : ''}
     SELECT o.opportunity_id, o.wc_lead_id, g.gate_stage,
       COALESCE(ob.has_outbound, FALSE) AS has_outbound,
       COALESCE(ob.has_internal, FALSE) AS has_internal_touch,
@@ -439,7 +531,6 @@ async function step7_classify(prePasses: PrePassResult[], config?: RunConfig): P
       lt_agg.full_timeline, lt_agg.total_content_chars
     FROM \`${DS}.opportunities\` o
     JOIN \`${DS}.lead_gate\` g ON o.opportunity_id = g.opportunity_id
-    ${isRecon ? 'JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id' : ''}
     LEFT JOIN (
       SELECT opportunity_id,
         MAX(CASE WHEN interaction_type IN ('Outbound Call', 'Outbound Email') THEN 1 ELSE 0 END) = 1 AS has_outbound,
@@ -481,7 +572,7 @@ async function step7_classify(prePasses: PrePassResult[], config?: RunConfig): P
         SELECT ac.opportunity_id FROM \`${DS}.crm_auto_classifications\` ac
         WHERE ac.action = 'system_miss'
       )
-      ${!isRecon ? `AND ${populationWhere}` : ''}
+      AND ${populationWhere}
     ORDER BY o.opportunity_id
   `)
 
@@ -503,25 +594,25 @@ async function step7_classify(prePasses: PrePassResult[], config?: RunConfig): P
 
 // ─── §2: classifyLead — THE ENGINE ──────────────────────────────────
 //
-// This function IS the T7.2 classification engine. The engine is CC:
-// the same Claude model that produced the validated 89.1% accuracy,
-// reading the prompt and reasoning over the timeline one lead at a time.
+// This function IS the T7.2 classification engine.
+// Engine: OpenAI GPT-4.1 (gpt-4.1).
+// Decision: replaces CC-as-classifier per explicit owner decision (2026-06-21).
 //
 // THE ENGINE SEAT IS NOT SWAPPABLE WITHOUT EXPLICIT DECISION.
-// If a future change wants to replace CC with a different engine
-// (e.g., a model API for scheduled production), that requires:
-//   1. A validation run proving the new engine matches CC's quality.
+// If a future change wants to replace GPT-4.1 with a different engine,
+// that requires:
+//   1. A validation run proving the new engine matches quality.
 //   2. A decision-log entry documenting the change and validation.
 //   3. A code change that names the new engine explicitly here.
-// Today the engine is CC. The code says so plainly.
+// Today the engine is OpenAI GPT-4.1. The code says so plainly.
 //
 // EXPLICITLY FORBIDDEN at this step (S15.1a):
 //   - Python/script/regex/keyword pattern matching to produce classifications
 //   - SQL CASE WHEN producing leaf strings
 //   - Bulk classification of multiple leads from a single inference
 //   - Heuristic "shortcuts" for "obvious" leads (Spam, Wrong Number, etc.)
-//   - Any abstraction layer that lets a future agent swap a non-Claude
-//     engine without an explicit decision-log entry
+//   - Any abstraction layer that lets a future agent swap engines
+//     without an explicit decision-log entry
 // If you find yourself writing code that does any of the above, STOP.
 
 /** The shape Step 7 materialises per lead — matches the BQ query output. */
@@ -542,14 +633,9 @@ interface LeadInput {
 /**
  * Classify a single lead. Called by the Step 7 loop, one lead at a time.
  *
- * Engine: CC-as-classifier. Claude reads the assembled prompt (system prompt
- * + timeline + pre-pass facts) and emits a structured T72Rationale JSON.
- * This is per-lead reasoning — not bulk classification, not pattern matching.
- *
- * In the current architecture (CC-mode), this function assembles the prompt
- * input that CC reasons over in conversation. The function does not call
- * any AI API. CC IS the runtime — it reads this input and produces the
- * rationale as part of the cascade execution.
+ * Engine: OpenAI GPT-4.1. Sends the system prompt + timeline + pre-pass
+ * facts via API, receives structured T72Rationale JSON via structured outputs.
+ * Per-lead reasoning — not bulk classification, not pattern matching.
  *
  * @returns Validated T72Rationale with the classification verdict.
  * @throws On any validation failure (off-taxonomy, malformed rationale, cross-check).
@@ -584,77 +670,45 @@ async function classifyLead(lead: LeadInput): Promise<T72Rationale> {
     }
   }
 
-  // ── 3. Assemble the prompt input ─────────────────────────────────
-  // The CC engine reads this assembled string. The full_timeline already
-  // contains job-side content (JOB DESCRIPTION, TECH LABOUR NOTE, TASK NOTES)
-  // folded in as labelled sections per L3 prep.
-  const promptInput = [
-    '=== SYSTEM PROMPT ===',
-    systemPrompt,
-    '',
-    '=== PRE-PASS FACTS ===',
-    `has_outbound: ${lead.has_outbound}`,
-    `has_internal_touch: ${lead.has_internal_touch}`,
-    `gate_stage: ${isBooked ? 'Booked:completed_zero' : 'NQ/NB'}`,
-    `allowed_set: [${allowedSet.map(s => `"${s}"`).join(', ')}]`,
-    '',
-    '=== LEAD ===',
-    `opportunity_id: ${lead.opportunity_id}`,
-    `wc_lead_id: ${lead.wc_lead_id}`,
-    `contact: ${lead.contact_name || 'Unknown'}`,
-    `channel: ${lead.channel}`,
-    `service: ${lead.service}`,
-    `suburb: ${lead.suburb || 'Unknown'}`,
-    '',
-    '=== TIMELINE ===',
-    lead.full_timeline,
-  ].join('\n')
+  // ── 3. Invoke the engine ─────────────────────────────────────────
+  // Engine: OpenAI GPT-4.1. Per-lead reasoning via API call.
+  // The system prompt + timeline + pre-pass facts are sent as separate
+  // messages. Structured output guarantees the T72Rationale JSON shape.
+  const cuExcluded = !isBooked && !lead.has_outbound
+  const njrExcluded = !lead.has_internal_touch
+  const prePassFacts = {
+    has_outbound: lead.has_outbound,
+    has_internal_touch: lead.has_internal_touch,
+    cu_excluded: cuExcluded,
+    njr_excluded: njrExcluded,
+  }
 
-  // ── 4. Invoke the engine ─────────────────────────────────────────
-  // Engine: CC-as-classifier. In CC-mode, the function writes the
-  // assembled prompt to the AI seam file. CC (this Claude session)
-  // reads each lead's prompt input and reasons over the timeline,
-  // producing the rationale JSON per the system prompt's output schema.
-  //
-  // The rationale shape is the locked L1b shape from rationale.ts:
-  //   { lead_id, gate_stage, allowed_set, pre_pass,
-  //     timeline_summary, decisive_signals, chosen, confidence,
-  //     rejected_alternatives, reasoning }
-  //
-  // This is where the classification HAPPENS. CC reads the timeline,
-  // applies the decision rules from the system prompt, and picks
-  // the sub_status from the constrained allowed_set. Per-lead
-  // reasoning, not bulk classification.
-  //
-  // In CC-mode, the actual inference happens when CC processes the
-  // materialised input file in conversation. This function returns
-  // the rationale that CC produced.
-  //
-  // PLACEHOLDER: In CC-mode, the rationale is read from the output
-  // file that CC wrote during the Step 7 AI seam. This function
-  // assembles and validates — CC has already reasoned.
-  // When a production engine replaces CC, this is the ONLY place
-  // that changes: the API call goes here, returning the same shape.
-  throw new Error(
-    'classifyLead: CC-mode — classification happens at the AI seam. ' +
-    'CC reads t7_classify_ai_input.json and writes t7_classify_ai_output.json. ' +
-    'This function is not called directly in CC-mode; it defines the ' +
-    'contract and validation that the loop enforces after CC classifies.'
+  const fullSystemPrompt = buildT72SystemPrompt(systemPrompt, allowedSet, prePassFacts, isBooked ? 'Booked' : 'NQ/NB')
+  const userMessage = buildT72UserMessage(lead)
+
+  const raw = await callOpenAI<T72Rationale>(
+    fullSystemPrompt,
+    userMessage,
+    T72_RATIONALE_JSON_SCHEMA as Record<string, unknown>,
   )
 
   // ── 5. Validate the returned JSON ────────────────────────────────
-  // (Reached only when a production engine replaces the CC seam above)
-  // - validateT72Rationale: shape + field presence
-  // - assertValidLeaf(chosen): off-taxonomy rejection
-  // - chosen === sub_status cross-check: rationale integrity
-  // See step8_writeClassifications for the current validation path.
+  const rationale = validateT72Rationale(raw)
+  assertValidLeaf(rationale.chosen)
+
+  if (!allowedSet.includes(rationale.chosen)) {
+    throw new Error(
+      `HALT: classifyLead chose "${rationale.chosen}" not in allowed_set ` +
+      `[${allowedSet.join(', ')}] for ${lead.opportunity_id}`
+    )
+  }
+
+  return rationale
 }
 
 /**
- * Validate a single CC-produced verdict against the classifyLead contract.
- * Called by Step 8 for every verdict CC wrote to the output file.
- * This is the same validation that classifyLead step 5 would run
- * if the engine were invoked programmatically.
+ * Validate a single verdict against the classifyLead contract.
+ * Called by Step 8 for every verdict in t7_classify_staging.
  */
 function validateVerdict(verdict: Record<string, unknown>, lead: LeadInput): T72Rationale {
   const isBooked = lead.gate_stage === 'judgement:Booked:completed_zero'
@@ -743,7 +797,7 @@ function validateVerdict(verdict: Record<string, unknown>, lead: LeadInput): T72
 // Reads from ds_crm.t7_classify_staging (populated by the classifier
 // per sub-batch), validates every row via validateVerdict, batch-MERGEs
 // to crm_auto_classifications, then deletes staging rows for the run_id.
-async function step8_writeClassifications(runId: string): Promise<void> {
+async function step8_writeClassifications(runId: string, runLabel: string = ''): Promise<void> {
   console.log(`STEP 8: WRITE CLASSIFICATIONS — run_id=${runId}`)
 
   // Ensure target table exists
@@ -751,6 +805,7 @@ async function step8_writeClassifications(runId: string): Promise<void> {
     CREATE TABLE IF NOT EXISTS \`${DS}.crm_auto_classifications\` (
       opportunity_id STRING,
       wc_lead_id INT64,
+      wc_leads_json STRING,
       gate_stage STRING,
       sub_status STRING,
       stage STRING,
@@ -760,6 +815,7 @@ async function step8_writeClassifications(runId: string): Promise<void> {
       rationale STRING,
       jobnumber STRING,
       run_id STRING,
+      run_label STRING,
       has_outbound BOOL,
       has_internal_touch BOOL,
       is_auto BOOL DEFAULT TRUE,
@@ -768,6 +824,14 @@ async function step8_writeClassifications(runId: string): Promise<void> {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
     )
   `)
+
+  // Add columns if they don't exist (migration for existing tables)
+  try {
+    await runScript(`ALTER TABLE \`${DS}.crm_auto_classifications\` ADD COLUMN IF NOT EXISTS wc_leads_json STRING`)
+  } catch { /* already exists */ }
+  try {
+    await runScript(`ALTER TABLE \`${DS}.crm_auto_classifications\` ADD COLUMN IF NOT EXISTS run_label STRING`)
+  } catch { /* column already exists */ }
 
   // Ensure staging table exists
   await runScript(`
@@ -814,62 +878,92 @@ async function step8_writeClassifications(runId: string): Promise<void> {
   `)
   const leadsByOpp = new Map(inputLeads.map(l => [l.opportunity_id, l]))
 
+  // Load wc_leads arrays from opportunities (for wc_leads_json column)
+  const oppWcLeads = await runQuery<{ opportunity_id: string; wc_leads_json: string }>(`
+    SELECT opportunity_id, TO_JSON_STRING(wc_leads) AS wc_leads_json
+    FROM \`${DS}.opportunities\`
+  `)
+  const wcLeadsByOpp = new Map(oppWcLeads.map(o => [o.opportunity_id, o.wc_leads_json || '[]']))
+
   // Validate every verdict against the classifyLead contract.
-  // validateVerdict checks: shape + leaf + cross-check + allowed-set.
+  // Bad verdicts are flagged and skipped — good verdicts are written.
+  const validVerdicts: typeof verdicts = []
+  const badVerdicts: Array<{ opportunity_id: string; error: string }> = []
+
   for (const v of verdicts) {
     const lead = leadsByOpp.get(v.opportunity_id)
-    if (lead) {
-      try {
+    try {
+      if (lead) {
         validateVerdict(v as Record<string, unknown>, lead)
-      } catch (e) {
-        throw new Error(
-          `HALT: T7.2 validation failed for ${v.opportunity_id}: ${(e as Error).message}`
-        )
-      }
-    } else {
-      // Not in input table — basic validation only
-      try {
+      } else {
+        // Not in input table — basic validation only
         assertValidLeaf(v.sub_status)
-      } catch (e) {
-        throw new Error(
-          `HALT: off-taxonomy sub_status "${v.sub_status}" for ${v.opportunity_id}: ${(e as Error).message}`
-        )
-      }
-      if (v.rationale) {
-        const parsed = typeof v.rationale === 'string' ? JSON.parse(v.rationale) : v.rationale
-        const validated = validateT72Rationale(parsed)
-        if (validated.chosen !== v.sub_status) {
-          throw new Error(
-            `HALT: rationale.chosen "${validated.chosen}" !== sub_status "${v.sub_status}" for ${v.opportunity_id}`
-          )
+        if (v.rationale) {
+          const parsed = typeof v.rationale === 'string' ? JSON.parse(v.rationale) : v.rationale
+          const validated = validateT72Rationale(parsed)
+          if (validated.chosen !== v.sub_status) {
+            throw new Error(`rationale.chosen "${validated.chosen}" !== sub_status "${v.sub_status}"`)
+          }
         }
       }
+      validVerdicts.push(v)
+    } catch (e) {
+      const errorMsg = (e as Error).message
+      badVerdicts.push({ opportunity_id: v.opportunity_id, error: errorMsg })
+      console.warn(`  BAD VERDICT: ${v.opportunity_id} — ${errorMsg}`)
     }
   }
 
-  console.log(`  All ${verdicts.length} verdicts passed validation`)
+  console.log(`  ${validVerdicts.length} passed validation, ${badVerdicts.length} bad verdicts skipped`)
 
-  // Chunked MERGE to crm_auto_classifications (50 per batch)
   const esc = (s: string | null | undefined) => s ? s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n') : ''
+
+  // Write bad verdicts to crm_auto_classifications with action='bad_verdict'
+  // so they're visible for review but not treated as classifications
+  if (badVerdicts.length > 0) {
+    const badValues = badVerdicts.map(b => {
+      const v = verdicts.find(vv => vv.opportunity_id === b.opportunity_id)!
+      const wcJson = wcLeadsByOpp.get(v.opportunity_id) || '[]'
+      return `STRUCT<opportunity_id STRING, wc_lead_id INT64, wc_leads_json STRING, gate_stage STRING, sub_status STRING, stage STRING, confidence FLOAT64, reasoning STRING, source_quote STRING, rationale STRING, jobnumber STRING, run_id STRING, run_label STRING, has_outbound BOOL, has_internal_touch BOOL, is_auto BOOL, action STRING, created_at TIMESTAMP, updated_at TIMESTAMP>(
+        '${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${esc(wcJson)}', '${v.gate_stage}', '${esc(v.sub_status)}', 'Bad Verdict', 0, '${esc(b.error)}', CAST(NULL AS STRING), '${esc(typeof v.rationale === 'object' ? JSON.stringify(v.rationale) : (v.rationale || ''))}', CAST(NULL AS STRING), '${runId}', '${esc(runLabel)}', CAST(NULL AS BOOL), CAST(NULL AS BOOL), TRUE, 'bad_verdict', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
+    }).join(',\n        ')
+
+    await runScript(`
+      MERGE \`${DS}.crm_auto_classifications\` T
+      USING (SELECT * FROM UNNEST([${badValues}])) S
+      ON T.opportunity_id = S.opportunity_id
+        AND COALESCE(T.run_id, '') = COALESCE(S.run_id, '')
+      WHEN NOT MATCHED THEN INSERT (opportunity_id, wc_lead_id, wc_leads_json, gate_stage, sub_status, stage, confidence, reasoning, source_quote, rationale, jobnumber, run_id, run_label, has_outbound, has_internal_touch, is_auto, action, created_at, updated_at)
+        VALUES (S.opportunity_id, S.wc_lead_id, S.wc_leads_json, S.gate_stage, S.sub_status, S.stage, S.confidence, S.reasoning, S.source_quote, S.rationale, S.jobnumber, S.run_id, S.run_label, S.has_outbound, S.has_internal_touch, S.is_auto, S.action, S.created_at, S.updated_at)
+      WHEN MATCHED THEN UPDATE SET
+        sub_status = S.sub_status, stage = S.stage, confidence = S.confidence,
+        reasoning = S.reasoning, rationale = S.rationale,
+        wc_leads_json = S.wc_leads_json, run_label = S.run_label,
+        action = S.action, updated_at = CURRENT_TIMESTAMP()
+    `)
+    console.log(`  ${badVerdicts.length} bad verdicts written with action='bad_verdict' for review`)
+  }
+
+  // Chunked MERGE of valid verdicts to crm_auto_classifications (50 per batch)
   const CHUNK = 50
   let written = 0
-  for (let i = 0; i < verdicts.length; i += CHUNK) {
-    const chunk = verdicts.slice(i, i + CHUNK)
+  for (let i = 0; i < validVerdicts.length; i += CHUNK) {
+    const chunk = validVerdicts.slice(i, i + CHUNK)
     const values = chunk.map((v) => {
       const stage = v.gate_stage?.includes('Booked') ? 'Booked' :
         (SUB_STATUS_TO_STAGE[v.sub_status] || 'Not Booked')
       const rationaleStr = typeof v.rationale === 'object' ? JSON.stringify(v.rationale) : (v.rationale || '')
-      // Extract reasoning and source_quote from rationale JSON
       let reasoning = ''
       let sourceQuote: string | null = null
       try {
         const parsed = typeof v.rationale === 'string' ? JSON.parse(v.rationale) : v.rationale
         reasoning = parsed?.reasoning || ''
         sourceQuote = parsed?.source_quote || null
-      } catch { /* rationale already validated above */ }
+      } catch { /* rationale already validated */ }
       const lead = leadsByOpp.get(v.opportunity_id)
-      return `STRUCT<opportunity_id STRING, wc_lead_id INT64, gate_stage STRING, sub_status STRING, stage STRING, confidence FLOAT64, reasoning STRING, source_quote STRING, rationale STRING, jobnumber STRING, run_id STRING, has_outbound BOOL, has_internal_touch BOOL, is_auto BOOL, action STRING, created_at TIMESTAMP, updated_at TIMESTAMP>(
-        '${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${v.gate_stage}', '${esc(v.sub_status)}', '${stage}', ${v.confidence || 0}, '${esc(reasoning)}', ${sourceQuote ? `'${esc(sourceQuote)}'` : 'CAST(NULL AS STRING)'}, '${esc(rationaleStr)}', CAST(NULL AS STRING), '${runId}', ${lead?.has_outbound ?? 'CAST(NULL AS BOOL)'}, ${lead?.has_internal_touch ?? 'CAST(NULL AS BOOL)'}, TRUE, 'proposed', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
+      const wcJson = wcLeadsByOpp.get(v.opportunity_id) || '[]'
+      return `STRUCT<opportunity_id STRING, wc_lead_id INT64, wc_leads_json STRING, gate_stage STRING, sub_status STRING, stage STRING, confidence FLOAT64, reasoning STRING, source_quote STRING, rationale STRING, jobnumber STRING, run_id STRING, run_label STRING, has_outbound BOOL, has_internal_touch BOOL, is_auto BOOL, action STRING, created_at TIMESTAMP, updated_at TIMESTAMP>(
+        '${v.opportunity_id}', ${v.wc_lead_id || 'NULL'}, '${esc(wcJson)}', '${v.gate_stage}', '${esc(v.sub_status)}', '${stage}', ${v.confidence || 0}, '${esc(reasoning)}', ${sourceQuote ? `'${esc(sourceQuote)}'` : 'CAST(NULL AS STRING)'}, '${esc(rationaleStr)}', CAST(NULL AS STRING), '${runId}', '${esc(runLabel)}', ${lead?.has_outbound ?? 'CAST(NULL AS BOOL)'}, ${lead?.has_internal_touch ?? 'CAST(NULL AS BOOL)'}, TRUE, 'proposed', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())`
     }).join(',\n        ')
 
     await runScript(`
@@ -881,20 +975,318 @@ async function step8_writeClassifications(runId: string): Promise<void> {
         sub_status = S.sub_status, stage = S.stage,
         confidence = S.confidence, reasoning = S.reasoning,
         source_quote = S.source_quote, rationale = S.rationale,
+        wc_leads_json = S.wc_leads_json, run_label = S.run_label,
         jobnumber = S.jobnumber, run_id = S.run_id,
         has_outbound = S.has_outbound, has_internal_touch = S.has_internal_touch,
         action = S.action, updated_at = CURRENT_TIMESTAMP()
-      WHEN NOT MATCHED THEN INSERT (opportunity_id, wc_lead_id, gate_stage, sub_status, stage, confidence, reasoning, source_quote, rationale, jobnumber, run_id, has_outbound, has_internal_touch, is_auto, action, created_at, updated_at)
-        VALUES (S.opportunity_id, S.wc_lead_id, S.gate_stage, S.sub_status, S.stage, S.confidence, S.reasoning, S.source_quote, S.rationale, S.jobnumber, S.run_id, S.has_outbound, S.has_internal_touch, S.is_auto, S.action, S.created_at, S.updated_at)
+      WHEN NOT MATCHED THEN INSERT (opportunity_id, wc_lead_id, wc_leads_json, gate_stage, sub_status, stage, confidence, reasoning, source_quote, rationale, jobnumber, run_id, run_label, has_outbound, has_internal_touch, is_auto, action, created_at, updated_at)
+        VALUES (S.opportunity_id, S.wc_lead_id, S.wc_leads_json, S.gate_stage, S.sub_status, S.stage, S.confidence, S.reasoning, S.source_quote, S.rationale, S.jobnumber, S.run_id, S.run_label, S.has_outbound, S.has_internal_touch, S.is_auto, S.action, S.created_at, S.updated_at)
     `)
     written += chunk.length
-    console.log(`  Batch ${Math.floor(i / CHUNK) + 1}: ${written}/${verdicts.length} written`)
+    console.log(`  Batch ${Math.floor(i / CHUNK) + 1}: ${written}/${validVerdicts.length} written`)
   }
-  console.log(`  Written ${verdicts.length} classifications to crm_auto_classifications`)
+  console.log(`  Written ${validVerdicts.length} classifications to crm_auto_classifications`)
+  if (badVerdicts.length > 0) {
+    console.log(`  ⚠ ${badVerdicts.length} bad verdicts need review (action='bad_verdict'):`)
+    for (const b of badVerdicts) {
+      console.log(`    ${b.opportunity_id}: ${b.error}`)
+    }
+  }
 
   // Clean up staging rows for this run_id
   await runScript(`DELETE FROM \`${DS}.t7_classify_staging\` WHERE run_id = '${runId}'`)
   console.log(`  Staging rows deleted for run_id=${runId}`)
+}
+
+// ─── OPENAI INLINE: T7.1 MATCH ─────────────────────────────────────
+// Runs OpenAI GPT-4.1 per-lead for T7.1 matching.
+// Sequential calls (S15.1a: no parallel classification).
+// Writes verdicts to docs/t7_match_ai_output.json (same path Step 6 reads).
+
+async function runT71MatchInline(candidates: T7MatchCandidate[]): Promise<void> {
+  // Group candidates by opportunity_id (each lead gets its own API call)
+  const byOpp = new Map<string, T7MatchCandidate[]>()
+  for (const c of candidates) {
+    const list = byOpp.get(c.opportunity_id) || []
+    list.push(c)
+    byOpp.set(c.opportunity_id, list)
+  }
+
+  const total = byOpp.size
+  console.log(`T7.1 MATCH (OpenAI): ${total} leads to evaluate...`)
+  const startTime = Date.now()
+
+  const verdicts: Array<{
+    opportunity_id: string
+    wc_lead_id: number
+    jobnumber: string | null
+    confidence: number
+    evidence: string
+    corroboration: string
+    abstain: boolean
+    rationale: string  // JSON-serialized T71Rationale
+  }> = []
+
+  let i = 0
+  for (const [oppId, leadCandidates] of byOpp) {
+    i++
+    const first = leadCandidates[0]
+    const userMessage = buildT71UserMessage(
+      oppId,
+      first.lead_content,
+      first.contact_name,
+      leadCandidates,
+    )
+
+    try {
+      const result = await callOpenAI<{
+        jobnumber: string | null
+        confidence: number
+        evidence: string
+        corroboration: string
+        abstain: boolean
+      }>(MATCH_SYSTEM_PROMPT, userMessage, T71_MATCH_JSON_SCHEMA as Record<string, unknown>)
+
+      // Build full T71Rationale for persistence
+      const rationale: T71Rationale = {
+        lead_id: oppId,
+        candidate_count: leadCandidates.length,
+        candidates_considered: leadCandidates.map(c => ({
+          jobnumber: c.jobnumber,
+          client: c.client_name,
+          days_from_lead: c.days_fwd,
+          signals_matched: [
+            c.phone_match ? 'phone' : '',
+            c.email_match ? 'email' : '',
+            c.name_match ? 'name' : '',
+            c.suburb_match ? 'suburb' : '',
+            c.content_match ? 'content' : '',
+          ].filter(Boolean),
+        })),
+        chosen_jobnumber: result.jobnumber || '',
+        confidence: result.confidence,
+        match_signals: result.corroboration ? result.corroboration.split('+') : [],
+        reasoning: result.evidence,
+      }
+
+      verdicts.push({
+        opportunity_id: oppId,
+        wc_lead_id: first.wc_lead_id,
+        ...result,
+        rationale: JSON.stringify(rationale),
+      })
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      const status = result.abstain ? 'ABSTAIN' : `${result.jobnumber} @ ${result.confidence}`
+      console.log(`  T7.1 MATCH: lead ${i}/${total} (${oppId}) — ${status} — ${elapsed}s`)
+    } catch (err) {
+      console.error(`  T7.1 MATCH: lead ${i}/${total} (${oppId}) — ERROR: ${(err as Error).message}`)
+      verdicts.push({
+        opportunity_id: oppId,
+        wc_lead_id: first.wc_lead_id,
+        jobnumber: null,
+        confidence: 0,
+        evidence: `OpenAI API error: ${(err as Error).message}`,
+        corroboration: '',
+        abstain: true,
+        rationale: JSON.stringify({
+          lead_id: oppId,
+          candidate_count: leadCandidates.length,
+          candidates_considered: [],
+          chosen_jobnumber: '',
+          confidence: 0,
+          match_signals: [],
+          reasoning: `OpenAI API error: ${(err as Error).message}`,
+        }),
+      })
+    }
+  }
+
+  // Write verdicts to the same path Step 6 reads
+  const outPath = path.join(__dirname, '..', 'docs', 't7_match_ai_output.json')
+  fs.writeFileSync(outPath, JSON.stringify(verdicts, null, 2))
+  console.log(`T7.1 MATCH (OpenAI): ${verdicts.length} verdicts written to ${outPath}`)
+  const matches = verdicts.filter(v => !v.abstain && v.confidence >= 0.8)
+  console.log(`  ${matches.length} matches, ${verdicts.length - matches.length} abstentions`)
+  const t71Usage = getTokenUsage()
+  console.log(`  Tokens: ${t71Usage.prompt_tokens.toLocaleString()} prompt + ${t71Usage.completion_tokens.toLocaleString()} completion = ${t71Usage.total_tokens.toLocaleString()} total (${t71Usage.api_calls} calls)`)
+  resetTokenUsage()
+}
+
+// ─── OPENAI INLINE: T7.2 CLASSIFY ─────────────────────────────────
+// Runs OpenAI GPT-4.1 per-lead for T7.2 classification.
+// Queries t7_classify_input in batches of 50, validates each verdict,
+// writes to t7_classify_staging. Returns the generated run_id.
+
+async function runT72ClassifyInline(): Promise<string> {
+  const runId = `openai_${new Date().toISOString().replace(/[:.]/g, '_')}`
+  console.log(`T7.2 CLASSIFY (OpenAI): run_id=${runId}`)
+
+  // Ensure staging table exists
+  await runScript(`
+    CREATE TABLE IF NOT EXISTS \`${DS}.t7_classify_staging\` (
+      run_id STRING,
+      opportunity_id STRING,
+      wc_lead_id INT64,
+      gate_stage STRING,
+      sub_status STRING,
+      confidence FLOAT64,
+      rationale STRING,
+      written_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    )
+  `)
+
+  // Count total leads
+  const [{ total }] = await runQuery<{ total: number }>(
+    `SELECT COUNT(*) AS total FROM \`${DS}.t7_classify_input\``
+  )
+  console.log(`  ${total} leads to classify`)
+
+  const BATCH = 50
+  let classified = 0
+  const startTime = Date.now()
+  const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
+
+  for (let offset = 0; offset < total; offset += BATCH) {
+    const leads = await runQuery<LeadInput>(`
+      SELECT opportunity_id, wc_lead_id, gate_stage, has_outbound,
+        has_internal_touch, contact_name, channel, service, suburb,
+        full_timeline, total_content_chars
+      FROM \`${DS}.t7_classify_input\`
+      ORDER BY opportunity_id
+      LIMIT ${BATCH} OFFSET ${offset}
+    `)
+
+    const stagingRows: string[] = []
+
+    for (const lead of leads) {
+      classified++
+      const isBooked = lead.gate_stage === 'judgement:Booked:completed_zero'
+
+      // Derive allowed_set (same logic as classifyLead)
+      let allowedSet: readonly string[]
+      if (isBooked) {
+        allowedSet = BOOKED_ALLOWED
+      } else {
+        allowedSet = lead.has_outbound ? [...NQ_NB_ALLOWED] : [...NQ_NB_ALLOWED_NO_OUTBOUND]
+        if (!lead.has_internal_touch) {
+          allowedSet = allowedSet.filter(s => s !== 'Not Job Related')
+        }
+      }
+
+      const cuExcluded = !isBooked && !lead.has_outbound
+      const njrExcluded = !lead.has_internal_touch
+      const prePassFacts = {
+        has_outbound: lead.has_outbound,
+        has_internal_touch: lead.has_internal_touch,
+        cu_excluded: cuExcluded,
+        njr_excluded: njrExcluded,
+      }
+
+      const basePrompt = isBooked ? BOOKED_SYSTEM_PROMPT : NQ_NB_SYSTEM_PROMPT
+      const systemPrompt = buildT72SystemPrompt(basePrompt, allowedSet, prePassFacts, isBooked ? 'Booked' : 'NQ/NB')
+      const userMessage = buildT72UserMessage(lead)
+
+      let rationale: T72Rationale | null = null
+      let retries = 0
+      const MAX_RETRIES = 2
+
+      while (retries <= MAX_RETRIES && !rationale) {
+        try {
+          const raw = await callOpenAI<T72Rationale>(
+            systemPrompt,
+            userMessage,
+            T72_RATIONALE_JSON_SCHEMA as Record<string, unknown>,
+          )
+
+          // Validate shape
+          const validated = validateT72Rationale(raw)
+
+          // Off-taxonomy check
+          assertValidLeaf(validated.chosen)
+
+          // Allowed-set check
+          if (!allowedSet.includes(validated.chosen)) {
+            throw new Error(
+              `chosen "${validated.chosen}" not in allowed_set [${allowedSet.join(', ')}]`
+            )
+          }
+
+          // Booked labour-note verbatim check
+          if (isBooked && lead.full_timeline) {
+            const labourMatch = lead.full_timeline.match(/TECH LABOUR NOTE:\n([\s\S]*?)(?:\n---|\n\nTASK|$)/)
+            if (labourMatch) {
+              const labourNote = labourMatch[1].trim()
+              if (labourNote.length >= 12) {
+                const searchIn = [validated.timeline_summary, ...validated.decisive_signals].join(' ')
+                let found = false
+                for (let j = 0; j <= labourNote.length - 12; j++) {
+                  if (searchIn.includes(labourNote.substring(j, j + 12))) {
+                    found = true
+                    break
+                  }
+                }
+                if (!found) {
+                  throw new Error(
+                    `Booked rationale does not reference verbatim TECH LABOUR NOTE content. ` +
+                    `Note starts: "${labourNote.slice(0, 80)}..."`
+                  )
+                }
+              }
+            }
+          }
+
+          rationale = validated
+        } catch (err) {
+          retries++
+          if (retries <= MAX_RETRIES) {
+            console.warn(`  T7.2: ${lead.opportunity_id} retry ${retries}/${MAX_RETRIES}: ${(err as Error).message}`)
+          } else {
+            console.error(`  T7.2: ${lead.opportunity_id} FAILED after ${MAX_RETRIES} retries: ${(err as Error).message}`)
+            // Fallback: Unable to Classify with confidence 0 → routes to human review
+            rationale = {
+              lead_id: lead.opportunity_id,
+              gate_stage: isBooked ? 'Booked' : 'NQ/NB',
+              allowed_set: [...allowedSet],
+              pre_pass: prePassFacts,
+              timeline_summary: `OpenAI classification failed: ${(err as Error).message}`,
+              decisive_signals: [],
+              chosen: 'Unable to Classify',
+              confidence: 0,
+              rejected_alternatives: [],
+              reasoning: `Classification failed after ${MAX_RETRIES} retries: ${(err as Error).message}`,
+            }
+          }
+        }
+      }
+
+      if (!rationale) continue // should not happen given fallback above
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      console.log(`  T7.2 CLASSIFY: lead ${classified}/${total} (${lead.opportunity_id}) — ${rationale.chosen} @ ${rationale.confidence} — ${elapsed}s`)
+
+      const rationaleJson = JSON.stringify(rationale)
+      stagingRows.push(
+        `('${runId}', '${lead.opportunity_id}', ${lead.wc_lead_id}, '${lead.gate_stage}', '${esc(rationale.chosen)}', ${rationale.confidence}, '${esc(rationaleJson)}', CURRENT_TIMESTAMP())`
+      )
+    }
+
+    // Batch INSERT staging rows
+    if (stagingRows.length > 0) {
+      await runScript(`
+        INSERT INTO \`${DS}.t7_classify_staging\` (run_id, opportunity_id, wc_lead_id, gate_stage, sub_status, confidence, rationale, written_at)
+        VALUES ${stagingRows.join(',\n        ')}
+      `)
+      console.log(`  Batch ${Math.floor(offset / BATCH) + 1}: ${stagingRows.length} rows staged`)
+    }
+  }
+
+  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+  const t72Usage = getTokenUsage()
+  console.log(`T7.2 CLASSIFY (OpenAI): ${classified} leads classified in ${totalElapsed}s, run_id=${runId}`)
+  console.log(`  Tokens: ${t72Usage.prompt_tokens.toLocaleString()} prompt + ${t72Usage.completion_tokens.toLocaleString()} completion = ${t72Usage.total_tokens.toLocaleString()} total (${t72Usage.api_calls} calls)`)
+  console.log(`  Est. cost: $${((t72Usage.prompt_tokens * 2 / 1_000_000) + (t72Usage.completion_tokens * 8 / 1_000_000)).toFixed(2)} (GPT-4.1 pricing)`)
+
+  return runId
 }
 
 // ─── STEP 9: READOUT ────────────────────────────────────────────────
@@ -1051,65 +1443,6 @@ async function writeSnapshot(): Promise<void> {
 
 
 
-// ─── STEP 9.5: FOOTING CHECK ───────────────────────────────────────
-async function step9_5_footingCheck(config: RunConfig): Promise<void> {
-  console.log('STEP 9.5: FOOTING CHECK — querying bucket counts...')
-
-  const excludeClause = testExclusionWhereClause('ale', DS)
-  const reconCTE = reconMappedOppsCTE(DS)
-
-  const [counts] = await runQuery<ObservedCounts>(`
-    WITH
-    csv_leads AS (
-      SELECT wc_lead_id FROM \`${DS}.ferg_csv_classifications\`
-    ),
-    test_excluded AS (
-      SELECT f.wc_lead_id
-      FROM \`${DS}.ferg_csv_classifications\` f
-      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
-        ON f.wc_lead_id = ale.lead_id
-      WHERE ${excludeClause}
-    ),
-    ${reconCTE},
-    mapped_leads AS (
-      SELECT DISTINCT f.wc_lead_id
-      FROM \`${DS}.ferg_csv_classifications\` f
-      JOIN recon_mapped_opps r ON f.wc_lead_id = CAST(r.opp_id AS INT64)
-        OR f.wc_lead_id IN (
-          SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
-          WHERE o.opportunity_id = r.opp_id AND o.wc_lead_id IS NOT NULL
-        )
-    ),
-    non_excluded_unmapped AS (
-      SELECT f.wc_lead_id
-      FROM \`${DS}.ferg_csv_classifications\` f
-      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
-        ON f.wc_lead_id = ale.lead_id
-      WHERE f.wc_lead_id NOT IN (SELECT wc_lead_id FROM test_excluded)
-        AND f.wc_lead_id NOT IN (SELECT wc_lead_id FROM mapped_leads)
-    ),
-    no_identity AS (
-      SELECT nu.wc_lead_id
-      FROM non_excluded_unmapped nu
-      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
-        ON nu.wc_lead_id = ale.lead_id
-      WHERE (ale.norm_phone IS NULL OR ale.norm_phone = '')
-        AND (ale.norm_contact_phone IS NULL OR ale.norm_contact_phone = '')
-    )
-    SELECT
-      (SELECT COUNT(*) FROM test_excluded) AS test_excluded,
-      (SELECT COUNT(*) FROM mapped_leads) AS mapped,
-      (SELECT COUNT(*) FROM no_identity) AS no_identity,
-      (SELECT COUNT(*) FROM non_excluded_unmapped)
-        - (SELECT COUNT(*) FROM no_identity) AS spine_gap,
-      (SELECT COUNT(*) FROM csv_leads) AS total
-  `)
-
-  console.log(`  Observed: test_excluded=${counts.test_excluded}, mapped=${counts.mapped}, no_identity=${counts.no_identity}, spine_gap=${counts.spine_gap}, total=${counts.total}`)
-
-  runFootingCheck(config.scope, counts)
-}
-
 // ─── MAIN ───────────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2)
@@ -1120,20 +1453,32 @@ async function main() {
   const startStep = parseInt(args.find(a => a.startsWith('--step'))?.split('=')[1] || '0')
   const runId = args.find(a => a.startsWith('--run-id'))?.split('=')[1] || ''
   const dryRun = args.includes('--dry-run')
+  const haltAtSeam = args.includes('--halt-at-seam')
 
   // Validate population+mode before any BQ work
   const config = resolveRunConfig(population, mode)
 
   // Auto-widen date window for populations that are already constrained.
-  // reconciliation_1215: the recon CTE constrains the population, date window is irrelevant.
   // historical_pre_dec2025: era boundary constrains, date window would exclude most leads.
   // live_post_dec2025: date window matters — 100d idempotency for production daily runs.
   if (population !== 'live_post_dec2025' && population !== 'custom') {
     scope = 'all'
   }
 
+  const cascadeStartTime = Date.now()
+  const cascadeTimestamp = new Date().toISOString().replace(/[:.]/g, '_')
+  const runLabel = [
+    cascadeTimestamp,
+    `pop=${population}`,
+    `scope=${scope}`,
+    `mode=${mode}`,
+    haltAtSeam ? 'halt_at_seam' : 'openai_inline',
+    `steps=${startStep}-9`,
+  ].join(' | ')
+
   console.log(`\n${'='.repeat(60)}`)
-  console.log(`CASCADE RUN — population=${population}, mode=${mode}, window=${scope}, start=step${startStep}, dryRun=${dryRun}${runId ? `, run_id=${runId}` : ''}`)
+  console.log(`CASCADE RUN — population=${population}, mode=${mode}, window=${scope}, start=step${startStep}, dryRun=${dryRun}, haltAtSeam=${haltAtSeam}${runId ? `, run_id=${runId}` : ''}`)
+  console.log(`run_label: ${runLabel}`)
   console.log(`${'='.repeat(60)}\n`)
 
   if (dryRun) {
@@ -1156,32 +1501,35 @@ async function main() {
 
     // Population count + logRunStart (after spine is built)
     if (startStep <= 3) {
-      if (config.scope === 'reconciliation_1215') {
-        const [{ cnt }] = await runQuery<{ cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM \`${DS}.ferg_csv_classifications\``)
-        logRunStart(config, cnt)
-      } else {
-        const scopeWhere = scopeWhereClause(config.scope, DS)
-        const [{ cnt }] = await runQuery<{ cnt: number }>(
-          `SELECT COUNT(*) AS cnt FROM \`${DS}.opportunities\` o WHERE ${scopeWhere}`)
-        logRunStart(config, cnt)
-      }
+      const scopeWhere = scopeWhereClause(config.scope, DS)
+      const [{ cnt }] = await runQuery<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM \`${DS}.opportunities\` o WHERE ${scopeWhere}`)
+      logRunStart(config, cnt)
     }
+
+    // Step 3.5: write gate-determined classifications
+    const determinedRunId = `determined_${new Date().toISOString().replace(/[:.]/g, '_')}`
+    if (startStep <= 3) await step3_5_writeDetermined(scope, determinedRunId, runLabel)
 
     // Step 4: pre-passes (read-only queries)
     let prePasses: PrePassResult[] = []
     if (startStep <= 4) prePasses = await step4_prePasses(scope)
 
-    // Step 5: T7.1 match (AI SEAM — pauses for CC)
+    // Step 5: T7.1 match (AI SEAM — pauses for CC, or runs OpenAI inline)
     if (startStep <= 5 && config.steps.t7_match) {
       const matchResult = await step5_t7Match(scope)
       if (matchResult.candidates.length > 0) {
-        console.log('\n  *** AI SEAM: T7.1 match input ready. ***')
-        console.log('  CC evaluates, writes verdicts, re-invoke with --step=6')
-        console.log('  Or if no signal leads to evaluate, create empty [] verdict file.\n')
-        return  // pause for AI
+        if (haltAtSeam) {
+          console.log('\n  *** AI SEAM: T7.1 match input ready. ***')
+          console.log('  CC evaluates, writes verdicts, re-invoke with --step=6')
+          console.log('  Or if no signal leads to evaluate, create empty [] verdict file.\n')
+          return  // pause for AI
+        }
+        // Run OpenAI inline for T7.1 matching
+        await runT71MatchInline(matchResult.candidates)
+      } else {
+        console.log('  No signal leads — skipping to T7.2')
       }
-      console.log('  No signal leads — skipping to T7.2')
     }
 
     // Step 6: write matches + re-build
@@ -1191,34 +1539,43 @@ async function main() {
     // Name-matching against AroFlo free-text produces ~7:1 false positives.
     // The 6 known orphans (S16.2) are handled manually. See DECISION_LOG.md.
 
-    // Step 7: T7.2 classify — materialise input to BQ, then exit
+    // Step 7: T7.2 classify — materialise input to BQ, then exit or run OpenAI inline
+    let generatedRunId = runId
     if (startStep <= 7 && config.steps.t7_classify) {
       await step7_classify(prePasses, config)
-      return  // pause for classifier (CC or Cowork) to query sub-batches
+      if (haltAtSeam) {
+        return  // pause for classifier (CC or Cowork) to query sub-batches
+      }
+      // Run OpenAI inline for T7.2 classification
+      generatedRunId = await runT72ClassifyInline()
     }
 
     // Step 8: read staging, validate, MERGE to crm_auto_classifications
     if (startStep <= 8 && config.steps.t7_classify) {
-      if (!runId) {
+      const effectiveRunId = generatedRunId || runId
+      if (!effectiveRunId) {
         throw new Error(
           'HALT: --run-id is required for --step=8.\n' +
           'Usage: npx tsx scripts/run-cascade.ts --step=8 --run-id=<run_id>\n' +
           'The run_id must match what the classifier wrote to t7_classify_staging.'
         )
       }
-      await step8_writeClassifications(runId)
+      await step8_writeClassifications(effectiveRunId, runLabel)
     }
 
     // Step 9: readout
     if (startStep <= 9) await step9_readout(scope)
 
-    // Step 9.5: footing check
-    if (config.steps.footing) await step9_5_footingCheck(config)
-
     // Snapshot for reprocessing
     await writeSnapshot()
 
-    console.log('\n  CASCADE COMPLETE.\n')
+    const cascadeElapsed = ((Date.now() - cascadeStartTime) / 1000).toFixed(1)
+    const finalUsage = getTokenUsage()
+    console.log(`\n  CASCADE COMPLETE in ${cascadeElapsed}s`)
+    if (finalUsage.api_calls > 0) {
+      console.log(`  OpenAI totals: ${finalUsage.total_tokens.toLocaleString()} tokens, ${finalUsage.api_calls} calls, ~$${((finalUsage.prompt_tokens * 2 / 1_000_000) + (finalUsage.completion_tokens * 8 / 1_000_000)).toFixed(2)}`)
+    }
+    console.log()
 
   } catch (err) {
     console.error('CASCADE FAILED:', err)

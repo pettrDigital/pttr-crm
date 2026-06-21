@@ -275,7 +275,7 @@ form_rows_hydrated AS (
     SELECT CAST(lead_id AS STRING) AS lead_id,
       COALESCE(NULLIF(TRIM(contact_name), ''), NULLIF(TRIM(form_my_name), '')) AS best_name
     FROM `pttr-taskdata.gd_WhatConverts.all_leads_enriched`
-    WHERE lead_status = 'Unique' AND spam = FALSE AND is_test_lead = FALSE
+    WHERE spam = FALSE AND is_test_lead = FALSE
   ) wc_ale ON fr.lead_id = wc_ale.lead_id AND (fr.contact_name IS NULL OR TRIM(fr.contact_name) = '')
   LEFT JOIN (
     -- Deduplicate: only take twins with exactly one candidate per first-name + minute bucket

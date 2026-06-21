@@ -63,6 +63,12 @@ DECISION RULES:
 - If genuinely no outcome signal AND the job status is Open/not-yet-attended → "Job Pending"
 - CRITICAL: a Booked-stage job that is Archived with $0 and no work note is a lead that DIDN'T PROCEED. Default to "Quote Only" if a site visit occurred (any labour note exists), or "Booking Cancelled" if no visit evidence. Never "Job Pending" for an Archived job.
 
+RATIONALE QUALITY:
+- Your reasoning MUST reference specific content from the TECH LABOUR NOTE or TASK NOTES when available. Do not use generic boilerplate like "Attended site and provided quote. Customer did not proceed."
+- Good: "Job archived $0, labour note says: quoted $2,400+gst for switchboard upgrade, customer decided not to proceed."
+- Good: "Archived with $0 invoiced, no labour note available — deterministic Quote Only based on Archived status with site visit evidence."
+- Bad: "Attended site and provided quote. Customer did not proceed with work."
+
 Return ONLY this JSON:
 {"sub_status":"...","confidence":0.XX,"reasoning":"one sentence","source_quote":"key phrase or null"}`
 
@@ -76,15 +82,27 @@ DECISION RULES:
 1. If the caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement → "Spam"
 2. If the caller wants a service PETTR doesn't offer (not plumbing/electrical) → "Service Not Provided"
 3. If the caller is geographically outside Sydney metro → "Outside Service Area"
-4. If TRACKABLE outbound follow-up IS visible (calls/SMS/email sent — NOT an OHQ handoff) but customer didn't respond → "Customer Unresponsive"
-4a. If NO trackable outbound follow-up is visible in the timeline (including after-hours OHQ leads where follow-up goes to untracked tech mobile) → "No Follow-Up Recorded" (not Customer Unresponsive)
-5. If the caller explicitly mentioned price/cost as the reason for not proceeding → "Price / Minimum Call Out"
-6. If availability/timing was the barrier → "Capacity / Scheduling"
-7. If the caller said they found someone else / going elsewhere → "Booked Elsewhere"
-8. If the problem resolved on its own → "Customer Resolved"
-9. If the caller is a tenant needing strata approval → "Tenant / Strata Referral"
-10. If this is an existing-customer callback about an existing job → "Customer Inquiry Only"
-11. If the customer wanted a price estimate over the phone without booking → "Wanted Quote Over Phone"
+4. If the call is short, garbled, incomprehensible, background noise only, or disconnected with no meaningful service enquiry → "Wrong Number" ONLY if the caller explicitly indicates a wrong number. Otherwise these are connection failures — the gate handles them as Dropped Call. If the lead reached T7, classify by whatever content exists.
+5. If this is an existing-customer callback about an existing job → "Customer Inquiry Only"
+6. If the caller is a tenant needing strata/agent/owner approval → "Tenant / Strata Referral"
+7. If the issue is common property / strata responsibility → "Common Property Responsibility"
+
+SUBSTANTIVE DISCUSSION RULE (apply before rules 8-11):
+If PETTR and the customer had a substantive discussion — about the problem, pricing, timing, availability, booking, service scope, or next steps — then classify by what happened in that discussion. This applies whether the discussion was inbound or outbound. A substantive discussion means NFUR and CU cannot apply. Classify the actual barrier:
+- Pricing objection, call-out fee issue, minimum charge → "Price / Minimum Call Out"
+- Customer wanted price/advice/diagnosis over phone without booking → "Wanted Quote Over Phone"
+- PETTR had no availability, was booked out, timing didn't work → "Capacity / Scheduling"
+- Customer found another provider → "Booked Elsewhere"
+- Customer's issue was fixed or no longer required → "Customer Resolved"
+- A subsequent unanswered outbound follow-up AFTER a substantive discussion does NOT make the lead CU — classify by the discussion content.
+
+PRICING SIGNALS (override NFUR and CU when present):
+If pricing was discussed and appears to be the reason the customer did not proceed, classify as "Price / Minimum Call Out". Pricing signals include: customer asks about call-out fee or minimum charge, reacts negatively to quoted pricing, says it is too expensive, questions website pricing versus quoted pricing, says they will get other quotes or shop around, expresses frustration about not receiving pricing information. This applies whether the pricing discussion happened inbound or outbound.
+
+8. "No Follow-Up Recorded" — has_outbound is FALSE, AND no substantive discussion occurred during the inbound interaction. Use NFUR where the customer made an enquiry and PETTR simply did not respond or engage. Do NOT use NFUR where PETTR had a substantive live discussion with the customer — classify the barrier instead.
+9. "Customer Unresponsive" — has_outbound is TRUE, AND the customer did not meaningfully respond or re-engage. The outbound calls/SMS/emails were unanswered or unreplied. Do NOT use CU where the customer picked up and had a conversation — they were responsive. Classify the barrier instead.
+10. If the caller explicitly said they found someone else / going elsewhere → "Booked Elsewhere"
+11. If the problem resolved on its own before any booking → "Customer Resolved"
 
 CONFIDENCE CALIBRATION:
 - 0.9+: unambiguous content, single clear signal, no conflicting info.
