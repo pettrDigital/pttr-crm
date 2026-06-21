@@ -78,31 +78,29 @@ Pick ONE sub_status from this CLOSED set. The funnel stage is DERIVED from your 
 
 ${buildNqNbAllowedSection()}
 
-DECISION RULES:
-1. If the caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement → "Spam"
-2. If the caller wants a service PETTR doesn't offer (not plumbing/electrical) → "Service Not Provided"
-3. If the caller is geographically outside Sydney metro → "Outside Service Area"
-4. If the call is short, garbled, incomprehensible, background noise only, or disconnected with no meaningful service enquiry → "Wrong Number" ONLY if the caller explicitly indicates a wrong number. Otherwise these are connection failures — the gate handles them as Dropped Call. If the lead reached T7, classify by whatever content exists.
-5. If this is an existing-customer callback about an existing job → "Customer Inquiry Only"
-6. If the caller is a tenant needing strata/agent/owner approval → "Tenant / Strata Referral"
-7. If the issue is common property / strata responsibility → "Common Property Responsibility"
+IMPORTANT — CLASSIFY BY CONTENT FIRST, NOT BY OUTBOUND STATUS:
+Read the timeline content BEFORE checking has_outbound. If any conversation happened — whether inbound, outbound, or via an after-hours answering service (OHQ) — classify by what was discussed. An OHQ call where the operator discussed the problem with the customer IS a substantive interaction. has_outbound only matters when there is NO substantive content to classify.
 
-SUBSTANTIVE DISCUSSION RULE (apply before rules 8-11):
-If PETTR and the customer had a substantive discussion — about the problem, pricing, timing, availability, booking, service scope, or next steps — then classify by what happened in that discussion. This applies whether the discussion was inbound or outbound. A substantive discussion means NFUR and CU cannot apply. Classify the actual barrier:
-- Pricing objection, call-out fee issue, minimum charge → "Price / Minimum Call Out"
-- Customer wanted price/advice/diagnosis over phone without booking → "Wanted Quote Over Phone"
-- PETTR had no availability, was booked out, timing didn't work → "Capacity / Scheduling"
-- Customer found another provider → "Booked Elsewhere"
-- Customer's issue was fixed or no longer required → "Customer Resolved"
-- A subsequent unanswered outbound follow-up AFTER a substantive discussion does NOT make the lead CU — classify by the discussion content.
+DECISION RULES (apply in order — first match wins):
 
-PRICING SIGNALS (override NFUR and CU when present):
-If pricing was discussed and appears to be the reason the customer did not proceed, classify as "Price / Minimum Call Out". Pricing signals include: customer asks about call-out fee or minimum charge, reacts negatively to quoted pricing, says it is too expensive, questions website pricing versus quoted pricing, says they will get other quotes or shop around, expresses frustration about not receiving pricing information. This applies whether the pricing discussion happened inbound or outbound.
+1. "Spam" — caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement.
+2. "Service Not Provided" — customer wants a service PETTR doesn't offer. Includes: solar, aircon/HVAC, appliances (fridge, oven repair, dishwasher repair, washing machine), TV repair, locksmith, auto electrician, gas fitting, data/internet cabling, EV charger servicing, handyman work, white goods. Also applies when staff says "we don't do that" or "we don't service that."
+3. "Outside Service Area" — caller is geographically outside Sydney/Greater Sydney metro.
+4. "Wrong Number" — caller explicitly indicates they called the wrong number, or content clearly shows the call was not intended for PETTR. Do NOT use for garbled/short/disconnected calls.
+5. "Customer Inquiry Only" — existing customer calling about an existing job (status check, warranty, callback about prior work).
+6. "Tenant / Strata Referral" — caller is a tenant told to contact their agent/owner/strata/housing commission.
+7. "Common Property Responsibility" — issue is strata/body corporate responsibility, not direct-to-homeowner.
+8. "Price / Minimum Call Out" — pricing was discussed and is the reason the customer did not proceed. Includes: customer asks about call-out fee or minimum charge, reacts negatively to quoted pricing, says it is too expensive, questions website pricing vs quoted pricing, says they will get other quotes, expresses frustration about not receiving pricing information. Applies whether pricing was discussed inbound or outbound, including after-hours OHQ calls where the customer asks about cost.
+9. "Wanted Quote Over Phone" — customer wanted a price, advice, or diagnosis over the phone without booking a site visit.
+10. "Capacity / Scheduling" — PETTR had no availability, was booked out, or timing didn't work for the customer.
+11. "Booked Elsewhere" — customer explicitly said they found or are going with another provider.
+12. "Customer Resolved" — customer's problem was fixed or no longer required before any PETTR booking.
+13. "Not Job Related" — identified internal staff communication (requires is_internal_did signal).
 
-8. "No Follow-Up Recorded" — has_outbound is FALSE, AND no substantive discussion occurred during the inbound interaction. Use NFUR where the customer made an enquiry and PETTR simply did not respond or engage. Do NOT use NFUR where PETTR had a substantive live discussion with the customer — classify the barrier instead.
-9. "Customer Unresponsive" — has_outbound is TRUE, AND the customer did not meaningfully respond or re-engage. The outbound calls/SMS/emails were unanswered or unreplied. Do NOT use CU where the customer picked up and had a conversation — they were responsive. Classify the barrier instead.
-10. If the caller explicitly said they found someone else / going elsewhere → "Booked Elsewhere"
-11. If the problem resolved on its own before any booking → "Customer Resolved"
+LAST RESORT — NFUR and CU (only when rules 1-13 do not apply):
+14. "No Follow-Up Recorded" — has_outbound is FALSE, AND no substantive discussion occurred. Use ONLY when the customer made an enquiry (form, OHQ message, brief call) and there is no evidence that PETTR engaged with the customer's problem, pricing, or booking. If an OHQ operator or staff member discussed the problem, pricing, availability, or next steps with the customer — even briefly — that IS engagement. Classify by rules 1-13 instead.
+15. "Customer Unresponsive" — has_outbound is TRUE, AND the customer did not meaningfully respond. Outbound calls were unanswered (0s duration, voicemail), or emails/SMS went unreplied. If the customer answered and had a conversation, they were responsive — classify by rules 1-13.
+16. "Other" — does not fit any defined category. Flags for human review.
 
 CONFIDENCE CALIBRATION:
 - 0.9+: unambiguous content, single clear signal, no conflicting info.
