@@ -146,8 +146,10 @@ interface MappedLead {
   dashboard_category: string | null
   dashboard_reason: string | null
   dashboard_quoteable: string
-  dashboard_job_number: string | null
+  dashboard_job_numbers: string | null
   dashboard_sale_value: number | null
+  dashboard_all_statuses: string | null
+  dashboard_all_reasons: string | null
   wc_status: string
   wc_lead_type: string | null
   lead_profile: string | null
@@ -249,15 +251,28 @@ async function mapAndCompare(): Promise<{
     best_match AS (
       SELECT wc_lead_id, opp_id, priority FROM ranked WHERE rn = 1
     ),
-    -- Aggregate to one row per opportunity: collect all WC lead IDs, pick primary CSV row
+    -- Aggregate to one row per opportunity: collect all WC lead IDs + dashboard fields
     opp_agg AS (
       SELECT
         bm.opp_id,
         ARRAY_AGG(bm.wc_lead_id ORDER BY bm.priority) AS wc_lead_ids,
         MIN(bm.priority) AS best_priority,
-        -- Pick the primary WC lead (highest priority match) for dashboard fields
         ARRAY_AGG(bm.wc_lead_id ORDER BY bm.priority LIMIT 1)[OFFSET(0)] AS primary_wc_lead_id
       FROM best_match bm
+      GROUP BY bm.opp_id
+    ),
+    -- Aggregate dashboard job numbers and values across all WC leads per opportunity
+    dash_agg AS (
+      SELECT
+        bm.opp_id,
+        ARRAY_AGG(DISTINCT f.job_number IGNORE NULLS ORDER BY f.job_number) AS dash_job_numbers,
+        SUM(DISTINCT CASE WHEN f.job_number IS NOT NULL AND f.job_number != '' THEN f.after_sale_value ELSE 0 END) AS dash_total_sale_value,
+        -- Collect distinct statuses and reasons across all WC leads
+        ARRAY_AGG(DISTINCT f.job_status IGNORE NULLS ORDER BY f.job_status) AS dash_statuses,
+        ARRAY_AGG(DISTINCT f.reason IGNORE NULLS ORDER BY f.reason) AS dash_reasons,
+        ARRAY_AGG(DISTINCT f.wc_lead_category IGNORE NULLS ORDER BY f.wc_lead_category) AS dash_categories
+      FROM best_match bm
+      JOIN \`${DS}.ferg_csv_classifications\` f ON bm.wc_lead_id = f.wc_lead_id
       GROUP BY bm.opp_id
     )
     SELECT
@@ -272,19 +287,22 @@ async function mapAndCompare(): Promise<{
       ac.action AS cascade_action,
       o.jobnumber AS cascade_jobnumber,
       COALESCE(inv.invoiced_total_ex, 0) AS cascade_invoiced,
-      -- Dashboard fields (from primary WC lead)
+      -- Dashboard fields (primary WC lead for status, aggregated for jobs/values)
       f.job_status AS dashboard_job_status,
       f.wc_lead_category AS dashboard_category,
       f.reason AS dashboard_reason,
       f.quoteable AS dashboard_quoteable,
-      f.job_number AS dashboard_job_number,
-      f.after_sale_value AS dashboard_sale_value,
+      TO_JSON_STRING(da.dash_job_numbers) AS dashboard_job_numbers,
+      da.dash_total_sale_value AS dashboard_sale_value,
+      TO_JSON_STRING(da.dash_statuses) AS dashboard_all_statuses,
+      TO_JSON_STRING(da.dash_reasons) AS dashboard_all_reasons,
       f.wc_status,
       f.wc_lead_type,
       f.lead_profile,
       -- All WC leads in this opportunity
       TO_JSON_STRING(oa.wc_lead_ids) AS wc_lead_ids_json
     FROM opp_agg oa
+    JOIN dash_agg da ON oa.opp_id = da.opp_id
     JOIN \`${DS}.ferg_csv_classifications\` f ON oa.primary_wc_lead_id = f.wc_lead_id
     JOIN \`${DS}.opportunities\` o ON oa.opp_id = o.opportunity_id
     LEFT JOIN \`${DS}.lead_gate\` g ON oa.opp_id = g.opportunity_id
@@ -483,8 +501,8 @@ async function main() {
       'opportunity_id', 'primary_wc_lead_id', 'all_wc_lead_ids', 'lead_profile', 'wc_lead_type', 'wc_status',
       'cascade_sub_status', 'cascade_stage', 'cascade_confidence', 'cascade_action',
       'cascade_jobnumber', 'cascade_invoiced',
-      'dashboard_job_status', 'dashboard_category', 'dashboard_reason',
-      'dashboard_job_number', 'dashboard_sale_value',
+      'dashboard_job_status', 'dashboard_all_statuses', 'dashboard_category', 'dashboard_reason', 'dashboard_all_reasons',
+      'dashboard_job_numbers', 'dashboard_sale_value',
     ].join(',')
     const csvEsc = (v: unknown) => {
       if (v === null || v === undefined) return '""'
@@ -496,8 +514,9 @@ async function main() {
       csvEsc(m.lead_profile), csvEsc(m.wc_lead_type), csvEsc(m.wc_status),
       csvEsc(m.cascade_sub_status), csvEsc(m.cascade_stage), csvEsc(m.cascade_confidence), csvEsc(m.cascade_action),
       csvEsc(m.cascade_jobnumber), csvEsc(m.cascade_invoiced),
-      csvEsc(m.dashboard_job_status), csvEsc(m.dashboard_category), csvEsc(m.dashboard_reason),
-      csvEsc(m.dashboard_job_number), csvEsc(m.dashboard_sale_value),
+      csvEsc(m.dashboard_job_status), csvEsc(m.dashboard_all_statuses),
+      csvEsc(m.dashboard_category), csvEsc(m.dashboard_reason), csvEsc(m.dashboard_all_reasons),
+      csvEsc(m.dashboard_job_numbers), csvEsc(m.dashboard_sale_value),
     ].join(','))
     fs.writeFileSync(csvOutPath, [csvHeader, ...csvRows].join('\n'))
     console.log(`RECON: Per-lead CSV written to ${csvOutPath}`)
