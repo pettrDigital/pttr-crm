@@ -35,9 +35,11 @@
  *
  * Usage:
  *   npx tsx scripts/run-cascade.ts [--scope all|30d|90d] [--skip-sync]
- *     [--step N]     (run from step N, skip earlier steps)
- *     [--run-id ID]  (required for --step=8: identifies the staging batch)
- *     [--dry-run]    (readout only, no writes)
+ *     [--population P]  (L2 scope: live_post_dec2025|reconciliation_1215|historical_pre_dec2025)
+ *     [--mode M]        (L2 mode: full|full_recon|deterministic)
+ *     [--step N]        (run from step N, skip earlier steps)
+ *     [--run-id ID]     (required for --step=8: identifies the staging batch)
+ *     [--dry-run]       (readout only, no writes)
  */
 
 import { BigQuery } from '@google-cloud/bigquery'
@@ -54,6 +56,14 @@ import {
 import { validateT72Rationale, validateT71Rationale } from '../src/lib/cascade/rationale'
 import type { T72Rationale, T71Rationale } from '../src/lib/cascade/rationale'
 import { reconMappedOppsCTE } from '../src/lib/cascade/wc-mapping'
+import { resolveRunConfig, scopeWhereClause, logRunStart } from '../src/lib/cascade/run-config'
+import type { Scope, Mode, RunConfig } from '../src/lib/cascade/run-config'
+import { runFootingCheck } from '../src/lib/cascade/footing/check'
+import type { ObservedCounts } from '../src/lib/cascade/footing/check'
+// orphan-detect.ts: selectClosestCandidate exists but Step 6.5 is pulled from
+// the automated cascade — name-matching against AroFlo free-text produces ~7:1
+// false positives (45 leads found vs 6 known orphans). See DECISION_LOG.md.
+import { testExclusionWhereClause } from '../src/lib/cascade/test-exclusion'
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const PROJECT_ID = 'pttr-taskdata'
@@ -405,19 +415,23 @@ async function step6_writeMatches(): Promise<void> {
 // Materialises the judgement-residual population to a BQ table
 // (ds_crm.t7_classify_input) for sub-batch querying by the classifier.
 // No JSON file handoff.
-async function step7_classify(prePasses: PrePassResult[]): Promise<void> {
+async function step7_classify(prePasses: PrePassResult[], config?: RunConfig): Promise<void> {
   console.log('STEP 7: T7.2 CLASSIFY — materialising input to BQ...')
 
   // Materialise the judgement population AFTER re-build.
   // Pre-pass facts: has_outbound (CU/NFUR gate), has_internal_touch (NJR gate).
   // Job-side content: folded into full_timeline as labelled rows (option (a) — same
   //   narrative shape the validated 89.1% model reads, no prompt template change).
-  // Population: scoped to reconciliation_1215 mapped opps via reconMappedOppsCTE
-  //   from wc-mapping.ts (single source of truth for the 3-way join).
-  const reconCTE = reconMappedOppsCTE(DS)
+  // Population scoping:
+  //   - reconciliation_1215: scoped via reconMappedOppsCTE JOIN
+  //   - live_post_dec2025: scoped via scopeWhereClause (era boundary)
+  //   - historical_pre_dec2025: never reached (t7_classify=false)
+  const isRecon = config?.scope === 'reconciliation_1215'
+  const reconCTE = isRecon ? reconMappedOppsCTE(DS) : null
+  const populationWhere = config ? scopeWhereClause(config.scope, DS) : 'TRUE'
   await runScript(`
     CREATE OR REPLACE TABLE \`${DS}.t7_classify_input\` AS
-    WITH ${reconCTE}
+    ${reconCTE ? `WITH ${reconCTE}` : ''}
     SELECT o.opportunity_id, o.wc_lead_id, g.gate_stage,
       COALESCE(ob.has_outbound, FALSE) AS has_outbound,
       COALESCE(ob.has_internal, FALSE) AS has_internal_touch,
@@ -425,7 +439,7 @@ async function step7_classify(prePasses: PrePassResult[]): Promise<void> {
       lt_agg.full_timeline, lt_agg.total_content_chars
     FROM \`${DS}.opportunities\` o
     JOIN \`${DS}.lead_gate\` g ON o.opportunity_id = g.opportunity_id
-    JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
+    ${isRecon ? 'JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id' : ''}
     LEFT JOIN (
       SELECT opportunity_id,
         MAX(CASE WHEN interaction_type IN ('Outbound Call', 'Outbound Email') THEN 1 ELSE 0 END) = 1 AS has_outbound,
@@ -467,6 +481,7 @@ async function step7_classify(prePasses: PrePassResult[]): Promise<void> {
         SELECT ac.opportunity_id FROM \`${DS}.crm_auto_classifications\` ac
         WHERE ac.action = 'system_miss'
       )
+      ${!isRecon ? `AND ${populationWhere}` : ''}
     ORDER BY o.opportunity_id
   `)
 
@@ -1034,17 +1049,91 @@ async function writeSnapshot(): Promise<void> {
   console.log('SNAPSHOT — done')
 }
 
+
+
+// ─── STEP 9.5: FOOTING CHECK ───────────────────────────────────────
+async function step9_5_footingCheck(config: RunConfig): Promise<void> {
+  console.log('STEP 9.5: FOOTING CHECK — querying bucket counts...')
+
+  const excludeClause = testExclusionWhereClause('ale', DS)
+  const reconCTE = reconMappedOppsCTE(DS)
+
+  const [counts] = await runQuery<ObservedCounts>(`
+    WITH
+    csv_leads AS (
+      SELECT wc_lead_id FROM \`${DS}.ferg_csv_classifications\`
+    ),
+    test_excluded AS (
+      SELECT f.wc_lead_id
+      FROM \`${DS}.ferg_csv_classifications\` f
+      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
+        ON f.wc_lead_id = ale.lead_id
+      WHERE ${excludeClause}
+    ),
+    ${reconCTE},
+    mapped_leads AS (
+      SELECT DISTINCT f.wc_lead_id
+      FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN recon_mapped_opps r ON f.wc_lead_id = CAST(r.opp_id AS INT64)
+        OR f.wc_lead_id IN (
+          SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
+          WHERE o.opportunity_id = r.opp_id AND o.wc_lead_id IS NOT NULL
+        )
+    ),
+    non_excluded_unmapped AS (
+      SELECT f.wc_lead_id
+      FROM \`${DS}.ferg_csv_classifications\` f
+      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
+        ON f.wc_lead_id = ale.lead_id
+      WHERE f.wc_lead_id NOT IN (SELECT wc_lead_id FROM test_excluded)
+        AND f.wc_lead_id NOT IN (SELECT wc_lead_id FROM mapped_leads)
+    ),
+    no_identity AS (
+      SELECT nu.wc_lead_id
+      FROM non_excluded_unmapped nu
+      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
+        ON nu.wc_lead_id = ale.lead_id
+      WHERE (ale.norm_phone IS NULL OR ale.norm_phone = '')
+        AND (ale.norm_contact_phone IS NULL OR ale.norm_contact_phone = '')
+    )
+    SELECT
+      (SELECT COUNT(*) FROM test_excluded) AS test_excluded,
+      (SELECT COUNT(*) FROM mapped_leads) AS mapped,
+      (SELECT COUNT(*) FROM no_identity) AS no_identity,
+      (SELECT COUNT(*) FROM non_excluded_unmapped)
+        - (SELECT COUNT(*) FROM no_identity) AS spine_gap,
+      (SELECT COUNT(*) FROM csv_leads) AS total
+  `)
+
+  console.log(`  Observed: test_excluded=${counts.test_excluded}, mapped=${counts.mapped}, no_identity=${counts.no_identity}, spine_gap=${counts.spine_gap}, total=${counts.total}`)
+
+  runFootingCheck(config.scope, counts)
+}
+
 // ─── MAIN ───────────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2)
-  const scope = args.find(a => a.startsWith('--scope'))?.split('=')[1] || '100d'
+  let scope = args.find(a => a.startsWith('--scope'))?.split('=')[1] || '100d'
+  const population = (args.find(a => a.startsWith('--population'))?.split('=')[1] || 'live_post_dec2025') as Scope
+  const mode = (args.find(a => a.startsWith('--mode'))?.split('=')[1] || 'full') as Mode
   const skipSync = args.includes('--skip-sync')
   const startStep = parseInt(args.find(a => a.startsWith('--step'))?.split('=')[1] || '0')
   const runId = args.find(a => a.startsWith('--run-id'))?.split('=')[1] || ''
   const dryRun = args.includes('--dry-run')
 
+  // Validate population+mode before any BQ work
+  const config = resolveRunConfig(population, mode)
+
+  // Auto-widen date window for populations that are already constrained.
+  // reconciliation_1215: the recon CTE constrains the population, date window is irrelevant.
+  // historical_pre_dec2025: era boundary constrains, date window would exclude most leads.
+  // live_post_dec2025: date window matters — 100d idempotency for production daily runs.
+  if (population !== 'live_post_dec2025' && population !== 'custom') {
+    scope = 'all'
+  }
+
   console.log(`\n${'='.repeat(60)}`)
-  console.log(`CASCADE RUN — scope=${scope}, start=step${startStep}, dryRun=${dryRun}${runId ? `, run_id=${runId}` : ''}`)
+  console.log(`CASCADE RUN — population=${population}, mode=${mode}, window=${scope}, start=step${startStep}, dryRun=${dryRun}${runId ? `, run_id=${runId}` : ''}`)
   console.log(`${'='.repeat(60)}\n`)
 
   if (dryRun) {
@@ -1065,12 +1154,27 @@ async function main() {
     if (startStep <= 2) await step2_buildLeadTimeline()
     if (startStep <= 3) await step3_leadGate()
 
+    // Population count + logRunStart (after spine is built)
+    if (startStep <= 3) {
+      if (config.scope === 'reconciliation_1215') {
+        const reconCTE = reconMappedOppsCTE(DS)
+        const [{ cnt }] = await runQuery<{ cnt: number }>(
+          `WITH ${reconCTE} SELECT COUNT(DISTINCT opp_id) AS cnt FROM recon_mapped_opps`)
+        logRunStart(config, cnt)
+      } else {
+        const scopeWhere = scopeWhereClause(config.scope, DS)
+        const [{ cnt }] = await runQuery<{ cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM \`${DS}.opportunities\` o WHERE ${scopeWhere}`)
+        logRunStart(config, cnt)
+      }
+    }
+
     // Step 4: pre-passes (read-only queries)
     let prePasses: PrePassResult[] = []
     if (startStep <= 4) prePasses = await step4_prePasses(scope)
 
     // Step 5: T7.1 match (AI SEAM — pauses for CC)
-    if (startStep <= 5) {
+    if (startStep <= 5 && config.steps.t7_match) {
       const matchResult = await step5_t7Match(scope)
       if (matchResult.candidates.length > 0) {
         console.log('\n  *** AI SEAM: T7.1 match input ready. ***')
@@ -1082,16 +1186,20 @@ async function main() {
     }
 
     // Step 6: write matches + re-build
-    if (startStep <= 6) await step6_writeMatches()
+    if (startStep <= 6 && config.steps.t7_match) await step6_writeMatches()
+
+    // Step 6.5: orphan detection — PULLED from automated cascade.
+    // Name-matching against AroFlo free-text produces ~7:1 false positives.
+    // The 6 known orphans (S16.2) are handled manually. See DECISION_LOG.md.
 
     // Step 7: T7.2 classify — materialise input to BQ, then exit
-    if (startStep <= 7) {
-      await step7_classify(prePasses)
+    if (startStep <= 7 && config.steps.t7_classify) {
+      await step7_classify(prePasses, config)
       return  // pause for classifier (CC or Cowork) to query sub-batches
     }
 
     // Step 8: read staging, validate, MERGE to crm_auto_classifications
-    if (startStep <= 8) {
+    if (startStep <= 8 && config.steps.t7_classify) {
       if (!runId) {
         throw new Error(
           'HALT: --run-id is required for --step=8.\n' +
@@ -1104,6 +1212,9 @@ async function main() {
 
     // Step 9: readout
     if (startStep <= 9) await step9_readout(scope)
+
+    // Step 9.5: footing check
+    if (config.steps.footing) await step9_5_footingCheck(config)
 
     // Snapshot for reprocessing
     await writeSnapshot()

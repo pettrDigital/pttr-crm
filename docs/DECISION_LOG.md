@@ -448,3 +448,36 @@ commit, file). State lives in the spec; this log records how it got there.
   false-positive if streaming-buffer rows are ever involved.
 
 ---
+
+## 2026-06-21 — L4: L2 wiring + Step 6.5 orphan detection pulled
+
+- DECISION: Wired L2 enforcement modules into run-cascade.ts. New flags:
+  --population (live_post_dec2025|reconciliation_1215|historical_pre_dec2025)
+  and --mode (full|full_recon|deterministic). resolveRunConfig() validates
+  combos before any BQ work. StepFlags gate Steps 5/6/7/8/9.5. Population
+  count + logRunStart after spine build (halts if reconciliation_1215 ≠ 1215).
+  Step 9.5 footing check wired (runFootingCheck with 4-bucket SQL).
+  Step 7 conditional scoping (recon CTE vs scopeWhereClause).
+  Existing --scope (100d/30d/90d/all) kept as date-window filter.
+  → scripts/run-cascade.ts (single file, ~100 lines added)
+  → No L2 module changes. 41 tests pass.
+
+- DECISION: Step 6.5 orphan detection PULLED from automated cascade.
+  Content-match scan (lead name substring in AroFlo description/task-notes/
+  labour-notes) produces ~7:1 false positives: 45 leads matched vs 6 known
+  orphans (S16.2). Root cause: common first names ("Alex M", "Matt", "Joe H")
+  match unrelated jobs; strata/Account job descriptions contain resident names
+  from many different leads. Adding task-notes and labour-notes to the scan
+  made it worse (21 extra false-positive leads). Two-word name filter reduced
+  noise but still 45 vs 6. Client-name-only matching catches only 2 of 6
+  orphans (the other 4 are Account jobs where the resident name is in the
+  description, not client_name).
+  → S16.1 says orphan detection is normative. The requirement stands, but the
+    automated mechanism doesn't work at acceptable precision. The 6 known
+    orphans (S16.2, $10,993) are handled manually.
+  → orphan-detect.ts (selectClosestCandidate) kept as tested library code.
+    The scan SQL is removed from run-cascade.ts. config.steps.orphan flag
+    exists but is not acted on.
+  → This is the same conclusion reached previously — re-verified with evidence.
+
+---
