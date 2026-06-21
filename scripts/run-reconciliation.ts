@@ -151,6 +151,7 @@ interface MappedLead {
   wc_status: string
   wc_lead_type: string | null
   lead_profile: string | null
+  wc_lead_ids_json: string | null
 }
 
 async function mapAndCompare(): Promise<{
@@ -247,11 +248,22 @@ async function mapAndCompare(): Promise<{
     ),
     best_match AS (
       SELECT wc_lead_id, opp_id, priority FROM ranked WHERE rn = 1
+    ),
+    -- Aggregate to one row per opportunity: collect all WC lead IDs, pick primary CSV row
+    opp_agg AS (
+      SELECT
+        bm.opp_id,
+        ARRAY_AGG(bm.wc_lead_id ORDER BY bm.priority) AS wc_lead_ids,
+        MIN(bm.priority) AS best_priority,
+        -- Pick the primary WC lead (highest priority match) for dashboard fields
+        ARRAY_AGG(bm.wc_lead_id ORDER BY bm.priority LIMIT 1)[OFFSET(0)] AS primary_wc_lead_id
+      FROM best_match bm
+      GROUP BY bm.opp_id
     )
     SELECT
-      bm.wc_lead_id AS csv_lead_id,
-      bm.opp_id,
-      bm.priority,
+      oa.primary_wc_lead_id AS csv_lead_id,
+      oa.opp_id,
+      oa.best_priority AS priority,
       -- Cascade fields
       g.gate_stage,
       ac.sub_status AS cascade_sub_status,
@@ -260,7 +272,7 @@ async function mapAndCompare(): Promise<{
       ac.action AS cascade_action,
       o.jobnumber AS cascade_jobnumber,
       COALESCE(inv.invoiced_total_ex, 0) AS cascade_invoiced,
-      -- Dashboard fields
+      -- Dashboard fields (from primary WC lead)
       f.job_status AS dashboard_job_status,
       f.wc_lead_category AS dashboard_category,
       f.reason AS dashboard_reason,
@@ -269,11 +281,13 @@ async function mapAndCompare(): Promise<{
       f.after_sale_value AS dashboard_sale_value,
       f.wc_status,
       f.wc_lead_type,
-      f.lead_profile
-    FROM best_match bm
-    JOIN \`${DS}.ferg_csv_classifications\` f ON bm.wc_lead_id = f.wc_lead_id
-    JOIN \`${DS}.opportunities\` o ON bm.opp_id = o.opportunity_id
-    LEFT JOIN \`${DS}.lead_gate\` g ON bm.opp_id = g.opportunity_id
+      f.lead_profile,
+      -- All WC leads in this opportunity
+      TO_JSON_STRING(oa.wc_lead_ids) AS wc_lead_ids_json
+    FROM opp_agg oa
+    JOIN \`${DS}.ferg_csv_classifications\` f ON oa.primary_wc_lead_id = f.wc_lead_id
+    JOIN \`${DS}.opportunities\` o ON oa.opp_id = o.opportunity_id
+    LEFT JOIN \`${DS}.lead_gate\` g ON oa.opp_id = g.opportunity_id
     LEFT JOIN (
       -- One classification per opportunity: proposed > determined > bad_verdict, latest run_id
       SELECT * FROM (
@@ -285,7 +299,7 @@ async function mapAndCompare(): Promise<{
           ) AS ac_rn
         FROM \`${DS}.crm_auto_classifications\`
       ) WHERE ac_rn = 1
-    ) ac ON bm.opp_id = ac.opportunity_id
+    ) ac ON oa.opp_id = ac.opportunity_id
     LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` inv ON o.jobnumber = inv.jobnumber
   `)
 
@@ -466,7 +480,7 @@ async function main() {
     // Step 5: Generate per-lead CSV for detailed review
     const csvOutPath = path.join(__dirname, '..', 'data', 'reconciliation', 'reconciliation_output.csv')
     const csvHeader = [
-      'opportunity_id', 'wc_lead_id', 'lead_profile', 'wc_lead_type', 'wc_status',
+      'opportunity_id', 'primary_wc_lead_id', 'all_wc_lead_ids', 'lead_profile', 'wc_lead_type', 'wc_status',
       'cascade_sub_status', 'cascade_stage', 'cascade_confidence', 'cascade_action',
       'cascade_jobnumber', 'cascade_invoiced',
       'dashboard_job_status', 'dashboard_category', 'dashboard_reason',
@@ -478,7 +492,8 @@ async function main() {
       return `"${s}"`
     }
     const csvRows = mapped.map(m => [
-      csvEsc(m.opp_id), csvEsc(m.csv_lead_id), csvEsc(m.lead_profile), csvEsc(m.wc_lead_type), csvEsc(m.wc_status),
+      csvEsc(m.opp_id), csvEsc(m.csv_lead_id), csvEsc(m.wc_lead_ids_json),
+      csvEsc(m.lead_profile), csvEsc(m.wc_lead_type), csvEsc(m.wc_status),
       csvEsc(m.cascade_sub_status), csvEsc(m.cascade_stage), csvEsc(m.cascade_confidence), csvEsc(m.cascade_action),
       csvEsc(m.cascade_jobnumber), csvEsc(m.cascade_invoiced),
       csvEsc(m.dashboard_job_status), csvEsc(m.dashboard_category), csvEsc(m.dashboard_reason),
