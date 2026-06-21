@@ -1157,9 +1157,8 @@ async function main() {
     // Population count + logRunStart (after spine is built)
     if (startStep <= 3) {
       if (config.scope === 'reconciliation_1215') {
-        const reconCTE = reconMappedOppsCTE(DS)
         const [{ cnt }] = await runQuery<{ cnt: number }>(
-          `WITH ${reconCTE} SELECT COUNT(DISTINCT opp_id) AS cnt FROM recon_mapped_opps`)
+          `SELECT COUNT(*) AS cnt FROM \`${DS}.ferg_csv_classifications\``)
         logRunStart(config, cnt)
       } else {
         const scopeWhere = scopeWhereClause(config.scope, DS)

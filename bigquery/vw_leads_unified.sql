@@ -107,6 +107,51 @@ call_rows AS (
   FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL
 ),
 
+-- WC calls with no matching 8x8 CDR — these are real leads that would otherwise
+-- be missing from the spine entirely. 94 as of 2026-06-21. Includes the 3
+-- spine_gap leads from the reconciliation manifest. Uses the same column shape
+-- as call_rows so the UNION ALL works.
+wc_only_calls AS (
+  SELECT
+    CAST(wc.lead_id AS STRING) AS lead_id,
+    'call' AS source_type,
+    wc.phone_norm AS phone,
+    TIMESTAMP(wc.lead_datetime, 'Australia/Sydney') AS lead_timestamp,
+    wc.lead_datetime AS lead_timestamp_sydney,
+    0 AS duration_sec,
+    CAST(NULL AS STRING) AS queue_ext,
+    CAST(NULL AS STRING) AS queue_name,
+    CASE WHEN EXTRACT(DAYOFWEEK FROM wc.lead_datetime) BETWEEN 2 AND 6
+      AND EXTRACT(HOUR FROM wc.lead_datetime) >= 7 AND EXTRACT(HOUR FROM wc.lead_datetime) < 17
+      THEN TRUE ELSE FALSE END AS is_business_hours,
+    'whatconverts' AS attribution_source,
+    wc.lead_id AS wc_lead_id,
+    COALESCE(wc.channel, 'Direct / Untracked') AS channel,
+    COALESCE(wc.lead_source, 'direct') AS source,
+    COALESCE(wc.lead_medium, '(none)') AS medium,
+    wc.lead_campaign AS campaign,
+    wc.lead_keyword AS keyword,
+    wc.profile,
+    wc.tracking_number,
+    CAST(NULL AS STRING) AS direct_subtype,
+    'unknown' AS call_outcome,  -- no 8x8 CDR = can't determine outcome
+    CAST(NULL AS STRING) AS answered,
+    CAST(NULL AS STRING) AS missed,
+    CAST(NULL AS STRING) AS talk_time,
+    wc.contact_name,
+    wc.email,
+    CAST(NULL AS STRING) AS form_suburb,
+    CAST(NULL AS STRING) AS form_address,
+    CAST(NULL AS STRING) AS form_problem
+  FROM `pttr-taskdata.ds_crm.vw_leads` wc
+  LEFT JOIN `pttr-taskdata.ds_crm.test_numbers` tn ON wc.phone_norm = tn.phone_e164
+  WHERE wc.channel = 'Call'
+    AND tn.phone_e164 IS NULL  -- not a test number
+    AND NOT EXISTS (
+      SELECT 1 FROM call_rows cr WHERE cr.wc_lead_id = wc.lead_id
+    )
+),
+
 form_rows AS (
   SELECT
     CAST(lead_id AS STRING) AS lead_id,
@@ -455,6 +500,8 @@ email_rows AS (
 )
 
 SELECT * FROM call_rows
+UNION ALL
+SELECT * FROM wc_only_calls
 UNION ALL
 SELECT * FROM form_rows_hydrated
 UNION ALL
