@@ -179,6 +179,21 @@ const DETERMINED_GATE_MAP: Record<string, { sub_status: string; stage: string; r
 async function step3_5_writeDetermined(scope: string, runId: string, runLabel: string): Promise<number> {
   console.log('STEP 3.5: WRITE DETERMINED — gate-determined leads to crm_auto_classifications...')
 
+  // Ensure table + columns exist before writing
+  await runScript(`
+    CREATE TABLE IF NOT EXISTS \`${DS}.crm_auto_classifications\` (
+      opportunity_id STRING, wc_lead_id INT64, wc_leads_json STRING,
+      gate_stage STRING, sub_status STRING, stage STRING, confidence FLOAT64,
+      reasoning STRING, source_quote STRING, rationale STRING, jobnumber STRING,
+      run_id STRING, run_label STRING, has_outbound BOOL, has_internal_touch BOOL,
+      is_auto BOOL DEFAULT TRUE, action STRING DEFAULT 'proposed',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    )
+  `)
+  try { await runScript(`ALTER TABLE \`${DS}.crm_auto_classifications\` ADD COLUMN IF NOT EXISTS wc_leads_json STRING`) } catch { /* exists */ }
+  try { await runScript(`ALTER TABLE \`${DS}.crm_auto_classifications\` ADD COLUMN IF NOT EXISTS run_label STRING`) } catch { /* exists */ }
+
   const dateFilter = scope === 'all' ? '' :
     `AND DATE(o.opportunity_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${scope === '30d' ? 30 : scope === '90d' ? 90 : 100} DAY)`
 
