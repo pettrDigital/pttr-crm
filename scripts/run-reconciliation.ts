@@ -133,16 +133,24 @@ interface MappedLead {
   csv_lead_id: number
   opp_id: string
   priority: number
+  // Cascade fields
   gate_stage: string | null
   cascade_sub_status: string | null
   cascade_stage: string | null
   cascade_confidence: number | null
   cascade_action: string | null
+  cascade_jobnumber: string | null
+  cascade_invoiced: number | null
+  // Dashboard fields
   dashboard_job_status: string
   dashboard_category: string | null
+  dashboard_reason: string | null
   dashboard_quoteable: string
   dashboard_job_number: string | null
+  dashboard_sale_value: number | null
   wc_status: string
+  wc_lead_type: string | null
+  lead_profile: string | null
 }
 
 async function mapAndCompare(): Promise<{
@@ -244,20 +252,30 @@ async function mapAndCompare(): Promise<{
       bm.wc_lead_id AS csv_lead_id,
       bm.opp_id,
       bm.priority,
+      -- Cascade fields
       g.gate_stage,
       ac.sub_status AS cascade_sub_status,
       ac.stage AS cascade_stage,
       ac.confidence AS cascade_confidence,
       ac.action AS cascade_action,
+      o.jobnumber AS cascade_jobnumber,
+      COALESCE(inv.invoiced_total_ex, 0) AS cascade_invoiced,
+      -- Dashboard fields
       f.job_status AS dashboard_job_status,
       f.wc_lead_category AS dashboard_category,
+      f.reason AS dashboard_reason,
       f.quoteable AS dashboard_quoteable,
       f.job_number AS dashboard_job_number,
-      f.wc_status
+      f.after_sale_value AS dashboard_sale_value,
+      f.wc_status,
+      f.wc_lead_type,
+      f.lead_profile
     FROM best_match bm
     JOIN \`${DS}.ferg_csv_classifications\` f ON bm.wc_lead_id = f.wc_lead_id
+    JOIN \`${DS}.opportunities\` o ON bm.opp_id = o.opportunity_id
     LEFT JOIN \`${DS}.lead_gate\` g ON bm.opp_id = g.opportunity_id
     LEFT JOIN \`${DS}.crm_auto_classifications\` ac ON bm.opp_id = ac.opportunity_id
+    LEFT JOIN \`pttr-taskdata.ds_aroflo.vw_job_invoiced\` inv ON o.jobnumber = inv.jobnumber
   `)
 
   console.log(`  ${mapped.length} leads mapped with classifications`)
@@ -428,11 +446,35 @@ async function main() {
     console.log('RECON: Running footing check...')
     runFootingCheck('reconciliation_1215', footingCounts)
 
-    // Step 4: Generate report
+    // Step 4: Generate markdown report
     const report = generateReport(mapped, unmapped, footingCounts, csvPath)
     const outPath = path.join(__dirname, '..', 'docs', 't7_wc_reconciliation_full.md')
     fs.writeFileSync(outPath, report)
     console.log(`\nRECON: Report written to ${outPath}`)
+
+    // Step 5: Generate per-lead CSV for detailed review
+    const csvOutPath = path.join(__dirname, '..', 'data', 'reconciliation', 'reconciliation_output.csv')
+    const csvHeader = [
+      'opportunity_id', 'wc_lead_id', 'lead_profile', 'wc_lead_type', 'wc_status',
+      'cascade_sub_status', 'cascade_stage', 'cascade_confidence', 'cascade_action',
+      'cascade_jobnumber', 'cascade_invoiced',
+      'dashboard_job_status', 'dashboard_category', 'dashboard_reason',
+      'dashboard_job_number', 'dashboard_sale_value',
+    ].join(',')
+    const csvEsc = (v: unknown) => {
+      if (v === null || v === undefined) return '""'
+      const s = String(v).replace(/"/g, '""')
+      return `"${s}"`
+    }
+    const csvRows = mapped.map(m => [
+      csvEsc(m.opp_id), csvEsc(m.csv_lead_id), csvEsc(m.lead_profile), csvEsc(m.wc_lead_type), csvEsc(m.wc_status),
+      csvEsc(m.cascade_sub_status), csvEsc(m.cascade_stage), csvEsc(m.cascade_confidence), csvEsc(m.cascade_action),
+      csvEsc(m.cascade_jobnumber), csvEsc(m.cascade_invoiced),
+      csvEsc(m.dashboard_job_status), csvEsc(m.dashboard_category), csvEsc(m.dashboard_reason),
+      csvEsc(m.dashboard_job_number), csvEsc(m.dashboard_sale_value),
+    ].join(','))
+    fs.writeFileSync(csvOutPath, [csvHeader, ...csvRows].join('\n'))
+    console.log(`RECON: Per-lead CSV written to ${csvOutPath}`)
 
     // Summary
     console.log(`\n${'='.repeat(60)}`)
