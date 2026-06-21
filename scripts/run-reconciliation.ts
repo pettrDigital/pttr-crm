@@ -206,12 +206,44 @@ async function mapAndCompare(): Promise<{
   console.log(`  Footing: test_excluded=${footingCounts.test_excluded}, mapped=${footingCounts.mapped}, no_identity=${footingCounts.no_identity}, spine_gap=${footingCounts.spine_gap}, total=${footingCounts.total}`)
 
   // Get mapped leads with cascade + dashboard classifications
+  // Uses 3-way join: primary wc_lead_id OR wc_leads array OR phone fallback
   const mapped = await runQuery<MappedLead>(`
-    WITH ${reconCTE}
+    WITH ${reconCTE},
+    csv_to_opp AS (
+      -- P1: primary wc_lead_id
+      SELECT f.wc_lead_id, o.opportunity_id AS opp_id, 1 AS priority
+      FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id
+      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+      WHERE NOT ${excludeClause}
+      UNION ALL
+      -- P2: wc_leads array membership
+      SELECT f.wc_lead_id, aw.opportunity_id AS opp_id, 2 AS priority
+      FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN (SELECT o2.opportunity_id, wl.wc_lead_id FROM \`${DS}.opportunities\` o2, UNNEST(o2.wc_leads) wl) aw
+        ON f.wc_lead_id = aw.wc_lead_id
+      LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+      WHERE NOT ${excludeClause}
+      UNION ALL
+      -- P3: phone fallback
+      SELECT f.wc_lead_id, o.opportunity_id AS opp_id, 3 AS priority
+      FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+      JOIN \`${DS}.opportunities\` o ON ale.norm_phone = o.phone AND ale.norm_phone IS NOT NULL AND ale.norm_phone != ''
+      WHERE NOT ${excludeClause}
+    ),
+    ranked AS (
+      SELECT wc_lead_id, opp_id, priority,
+        ROW_NUMBER() OVER (PARTITION BY wc_lead_id ORDER BY priority, opp_id) AS rn
+      FROM csv_to_opp
+    ),
+    best_match AS (
+      SELECT wc_lead_id, opp_id, priority FROM ranked WHERE rn = 1
+    )
     SELECT
-      f.wc_lead_id AS csv_lead_id,
-      r.opp_id,
-      1 AS priority,
+      bm.wc_lead_id AS csv_lead_id,
+      bm.opp_id,
+      bm.priority,
       g.gate_stage,
       ac.sub_status AS cascade_sub_status,
       ac.stage AS cascade_stage,
@@ -222,13 +254,10 @@ async function mapAndCompare(): Promise<{
       f.quoteable AS dashboard_quoteable,
       f.job_number AS dashboard_job_number,
       f.wc_status
-    FROM \`${DS}.ferg_csv_classifications\` f
-    JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id AND o.wc_lead_id IS NOT NULL
-    JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
-    LEFT JOIN \`${DS}.lead_gate\` g ON r.opp_id = g.opportunity_id
-    LEFT JOIN \`${DS}.crm_auto_classifications\` ac ON r.opp_id = ac.opportunity_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
-    WHERE NOT ${excludeClause}
+    FROM best_match bm
+    JOIN \`${DS}.ferg_csv_classifications\` f ON bm.wc_lead_id = f.wc_lead_id
+    LEFT JOIN \`${DS}.lead_gate\` g ON bm.opp_id = g.opportunity_id
+    LEFT JOIN \`${DS}.crm_auto_classifications\` ac ON bm.opp_id = ac.opportunity_id
   `)
 
   console.log(`  ${mapped.length} leads mapped with classifications`)
@@ -237,10 +266,19 @@ async function mapAndCompare(): Promise<{
   const unmapped = await runQuery<{ wc_lead_id: number; wc_status: string; reason: string }>(`
     WITH ${reconCTE},
     all_mapped AS (
-      SELECT DISTINCT f.wc_lead_id
-      FROM \`${DS}.ferg_csv_classifications\` f
-      JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id AND o.wc_lead_id IS NOT NULL
-      JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
+      -- P1: primary
+      SELECT DISTINCT f.wc_lead_id FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id
+      UNION DISTINCT
+      -- P2: array
+      SELECT DISTINCT f.wc_lead_id FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN (SELECT o2.opportunity_id, wl.wc_lead_id FROM \`${DS}.opportunities\` o2, UNNEST(o2.wc_leads) wl) aw
+        ON f.wc_lead_id = aw.wc_lead_id
+      UNION DISTINCT
+      -- P3: phone
+      SELECT DISTINCT f.wc_lead_id FROM \`${DS}.ferg_csv_classifications\` f
+      JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
+      JOIN \`${DS}.opportunities\` o ON ale.norm_phone = o.phone AND ale.norm_phone IS NOT NULL AND ale.norm_phone != ''
     )
     SELECT f.wc_lead_id, f.wc_status,
       CASE
