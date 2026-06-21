@@ -400,6 +400,10 @@ async function step5_t7Match(scope: string): Promise<{
 async function step6_writeMatches(): Promise<void> {
   console.log('STEP 6: WRITE MATCHES — reading verdicts...')
 
+  // Ensure rationale column exists on match tables (migration for existing tables)
+  try { await runScript(`ALTER TABLE \`${DS}.crm_account_exclusions\` ADD COLUMN IF NOT EXISTS rationale STRING`) } catch { /* exists */ }
+  try { await runScript(`ALTER TABLE \`${DS}.crm_t7_match_queue\` ADD COLUMN IF NOT EXISTS rationale STRING`) } catch { /* exists */ }
+
   const verdictsPath = path.join(__dirname, '..', 'docs', 't7_match_ai_output.json')
   if (!fs.existsSync(verdictsPath)) {
     console.log('  No verdicts file found at', verdictsPath)
