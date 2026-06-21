@@ -49,14 +49,10 @@ async function loadCsvToBQ(csvPath: string): Promise<number> {
     throw new Error(`CSV not found: ${csvPath}`)
   }
 
-  // Parse CSV to extract columns and row count
-  const lines = fs.readFileSync(csvPath, 'utf-8').split('\n').filter(l => l.trim())
-  const rowCount = lines.length - 1  // exclude header
-  console.log(`  ${rowCount} rows in CSV`)
-
   // Prepare a clean CSV for BQ load (extract the columns we need)
+  // Use python csv module for correct parsing (handles multi-line quoted fields)
   const tmpCsv = '/tmp/recon_csv_upload.csv'
-  execSync(`python3 -c "
+  const rowCountOut = execSync(`python3 -c "
 import csv
 with open('${csvPath}', 'r') as f:
     reader = csv.DictReader(f)
@@ -78,7 +74,10 @@ with open('${tmpCsv}', 'w', newline='') as out:
             r['wc_lead_summary'], r['after_sale_value'],
             r['aroflo_phone'], r['aroflo_email'], r['aroflo_requested_date'],
         ])
-"`)
+print(len(rows))
+"`, { encoding: 'utf-8' }).trim()
+  const rowCount = parseInt(rowCountOut)
+  console.log(`  ${rowCount} rows in CSV (parsed)`)
 
   // Drop and recreate table
   await runScript(`DROP TABLE IF EXISTS \`${DS}.ferg_csv_classifications\``)
@@ -173,11 +172,11 @@ async function mapAndCompare(): Promise<{
     mapped_leads AS (
       SELECT DISTINCT f.wc_lead_id
       FROM \`${DS}.ferg_csv_classifications\` f
-      JOIN recon_mapped_opps r ON f.wc_lead_id = CAST(r.opp_id AS INT64)
-        OR f.wc_lead_id IN (
-          SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
-          WHERE o.opportunity_id = r.opp_id AND o.wc_lead_id IS NOT NULL
-        )
+      WHERE f.wc_lead_id IN (
+        SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
+        JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
+        WHERE o.wc_lead_id IS NOT NULL
+      )
     ),
     non_excluded_unmapped AS (
       SELECT f.wc_lead_id
@@ -224,10 +223,8 @@ async function mapAndCompare(): Promise<{
       f.job_number AS dashboard_job_number,
       f.wc_status
     FROM \`${DS}.ferg_csv_classifications\` f
-    JOIN recon_mapped_opps r ON f.wc_lead_id IN (
-      SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
-      WHERE o.opportunity_id = r.opp_id AND o.wc_lead_id IS NOT NULL
-    )
+    JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id AND o.wc_lead_id IS NOT NULL
+    JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
     LEFT JOIN \`${DS}.lead_gate\` g ON r.opp_id = g.opportunity_id
     LEFT JOIN \`${DS}.crm_auto_classifications\` ac ON r.opp_id = ac.opportunity_id
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale ON f.wc_lead_id = ale.lead_id
@@ -242,10 +239,8 @@ async function mapAndCompare(): Promise<{
     all_mapped AS (
       SELECT DISTINCT f.wc_lead_id
       FROM \`${DS}.ferg_csv_classifications\` f
-      JOIN recon_mapped_opps r ON f.wc_lead_id IN (
-        SELECT o.wc_lead_id FROM \`${DS}.opportunities\` o
-        WHERE o.opportunity_id = r.opp_id AND o.wc_lead_id IS NOT NULL
-      )
+      JOIN \`${DS}.opportunities\` o ON f.wc_lead_id = o.wc_lead_id AND o.wc_lead_id IS NOT NULL
+      JOIN recon_mapped_opps r ON o.opportunity_id = r.opp_id
     )
     SELECT f.wc_lead_id, f.wc_status,
       CASE
