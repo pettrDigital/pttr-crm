@@ -197,14 +197,20 @@ Multiple runs coexist by `run_id`. Filter a specific run by `run_label`.
 
 ### OUTSTANDING — NEXT STEPS (priority order)
 
-1. **Evaluate first OpenAI run** — compare GPT-4.1 output against CC baseline
-   (538 leads, run_id `cc_recon_2026_06_20_1750`). Check NFUR/CU redistribution.
-2. **Run reconciliation** against dashboard CSV after cascade run completes.
-3. **Lock footing manifest** — new bucket counts from first run with Repeat leads.
+1. **Multi-job gate fix** — 138 opps currently gated Booking Cancelled that have
+   a Completed secondary job with revenue ($146K). Set-based gate dry-run validated:
+   138/138 flip correctly, 0 false flips, no-op on single-job, no Account opps
+   touched. Ship it.
+2. **Re-run cascade with prompt v2** — content-first rules, NFUR/CU as last resort.
+   Measure NFUR/CU redistribution vs first run. Also picks up spine fixes (internal
+   email edge exclusion, Donna test_numbers exclusion).
+3. **Apply parked invoice dedup fixes** — `vw_job_invoiced.dedup.sql` and
+   `vw_job_revenue.dedup.sql`. $596 on 1 job (JN 140927). Validated, not deployed.
 4. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable.
-5. **AroFlo API correspondence-coverage verification** (spec S2.10).
-6. **Carried items**: T7.1 backward window, clustering window widening,
-   conflation guard by-list, payment-regex fix, vw_lead_enriched fanout.
+5. **Customer-attribution layer (S19)** — specced, future build.
+6. **AroFlo API correspondence-coverage verification** (spec S2.10).
+7. **Carried items**: conflation guard by-list, payment-regex fix,
+   vw_lead_enriched fanout.
 
 ### L5 — OPENAI ENGINE + REPEAT LEADS + PROMPT REFINEMENT (2026-06-21)
 
@@ -265,6 +271,55 @@ Multiple runs coexist by `run_id`. Filter a specific run by `run_label`.
   scope, mode, engine. Filter a specific run: `WHERE run_label LIKE '2026-06-21%'`.
 - Token usage tracking: prompt/completion/total tokens and estimated cost reported
   after T7.1, T7.2, and cascade complete.
+
+**Prompt v2 (content-first classification):**
+- NQ_NB rules restructured: explicit "CLASSIFY BY CONTENT FIRST, NOT BY OUTBOUND
+  STATUS" instruction. All content-based rules (SNP, Price, Capacity, WQoP, Tenant,
+  etc.) are top-level numbered rules 1-13. NFUR and CU are rules 14-15, labelled
+  "LAST RESORT". OHQ calls explicitly identified as substantive interactions.
+- SNP rule expanded with specific service types (solar, aircon, appliances, EV
+  chargers, data cabling, handyman, white goods).
+- Price/MCO rule includes OHQ pricing discussions.
+
+**First OpenAI run completed (2026-06-21):**
+- Run label: `2026-06-21T18_37_03_822Z | pop=live_post_dec2025 | scope=all`
+- 1,171 leads classified, 4 T7.1 matches, 12 bad verdicts, $11.48 cost, 74 min
+- NFUR dropped from 22% (CC) to 11%, CU from 16% to 4%, Price/MCO up 8x
+- Reconciliation run against dashboard CSV: 970 opps mapped, 0 spine gap
+- Per-lead CSV output: `data/reconciliation/reconciliation_output.csv`
+
+**Forensic reconciliation (Buckets 2-5):**
+- Bucket 2 (cascade missed job): 4 dashboard right (backward window), 1 cascade
+  right (Customer Inquiry Only), 1 dashboard wrong (phantom job).
+- Bucket 3 (cascade has revenue, dashboard doesn't): 4 cascade right (Account
+  jobs via site_phone), 1 needs human (name-only match).
+- Bucket 4 (JN mismatch): 1 cascade right, 3 dashboard right (Archived primary,
+  Completed secondary), 7 both valid (multi-job same customer).
+- Bucket 5 (multi-job): 4 confirmed, both jobs belong, same client.
+
+**Invoice dedup finding:**
+- `vw_job_invoiced` double-counts JN 140927 ($596 overstated) — same invoicenumber
+  under two invoiceids (approved → processed lifecycle). Scope: 1 job, $596.
+- `vw_job_revenue` has same bug (independent path, not via vw_job_invoiced).
+- Parked fixes: `bigquery/vw_job_invoiced.dedup.sql`, `bigquery/vw_job_revenue.dedup.sql`.
+  Validated via CTE, not deployed.
+
+**Multi-job gate analysis:**
+- 3,057 multi-job opps (10% of all), $2.47M secondary revenue invisible to cascade.
+- 138 opps gated Booking Cancelled with Completed secondary ($146K revenue).
+- All COD, all forward-looking, all edge-defined (phone chaining, not hub-spoke).
+- Set-based gate dry-run: 138/138 correct flip, 0 false, no-op on single-job.
+- Window extension tested (45/60/90d): destructive — 86% of 31-90d jobs already
+  attributed to other opps. $1.27M would be stolen. Window stays at 30d.
+- Customer-attribution layer specced as S19 (future build, sits above opps).
+
+**Internal email graph edge fix:**
+- Test forms (alexm@mrwasher.com.au) created graph edges that clustered with
+  internal correspondence (24-75K char opps, 3 bad verdicts).
+- Fix: internal emails + test phones excluded from `contact_points` graph edges.
+- Centralized: internal email list moved to BQ table `ds_crm.test_emails`.
+  All consumers (WC filter, graph edges, testExclusionWhereClause) read from table.
+- Donna (+61418400280) added to `test_numbers` (campaign admin, not customer).
 
 **Test/infra:**
 - 70 unit tests passing (0 API calls).
