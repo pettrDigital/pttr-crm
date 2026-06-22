@@ -78,11 +78,15 @@ Pick ONE sub_status from this CLOSED set. The funnel stage is DERIVED from your 
 
 ${buildNqNbAllowedSection()}
 
-IMPORTANT — CLASSIFY BY CONTENT FIRST, NOT BY OUTBOUND STATUS:
-Read the timeline content BEFORE checking has_outbound. If any conversation happened — whether inbound, outbound, or via an after-hours answering service (OHQ) — classify by what was discussed. An OHQ call where the operator discussed the problem with the customer IS a substantive interaction. has_outbound only matters when there is NO substantive content to classify.
+IMPORTANT — NFUR AND CU ARE STRUCTURAL, NOT CONTENT JUDGMENTS:
+NFUR and CU are determined by the TIMELINE STRUCTURE (what interactions exist and their sequence), not by reading transcript content. Check the interaction sequence BEFORE classifying:
+- If the lead has an ANSWERED inbound call (not OHQ/answering service) — PETTR engaged with the customer during that call. NFUR CANNOT apply to that interaction. Classify by what happened in the call (rules 1-13).
+- If the lead's LAST inbound touch is an OHQ/answering service message or a form/email AFTER an answered call, and there is no recorded outbound follow-up after it — NFUR applies (the follow-up channel is untracked or nobody responded).
+- OHQ/answering service calls are intake/handoff — the operator takes a message for the tech to call back. The OHQ call itself does NOT constitute engagement with the customer's problem. NFUR applies if no outbound follow-up is recorded after the OHQ handoff.
 
 DECISION RULES (apply in order — first match wins):
 
+FIRST: Check if PETTR answered an inbound call (not OHQ). If yes, classify by the call content:
 1. "Spam" — caller is selling/pitching TO PETTR, or seeking employment/apprenticeship/work placement.
 2. "Service Not Provided" — customer wants a service PETTR doesn't offer. Includes: solar, aircon/HVAC, appliances (fridge, oven repair, dishwasher repair, washing machine), TV repair, locksmith, auto electrician, gas fitting, data/internet cabling, EV charger servicing, handyman work, white goods. Also applies when staff says "we don't do that" or "we don't service that."
 3. "Outside Service Area" — caller is geographically outside Sydney/Greater Sydney metro.
@@ -90,15 +94,15 @@ DECISION RULES (apply in order — first match wins):
 5. "Customer Inquiry Only" — existing customer calling about an existing job (status check, warranty, callback about prior work).
 6. "Tenant / Strata Referral" — caller is a tenant told to contact their agent/owner/strata/housing commission.
 7. "Common Property Responsibility" — issue is strata/body corporate responsibility, not direct-to-homeowner.
-8. "Price / Minimum Call Out" — pricing was discussed and is the reason the customer did not proceed. Includes: customer asks about call-out fee or minimum charge, reacts negatively to quoted pricing, says it is too expensive, questions website pricing vs quoted pricing, says they will get other quotes, expresses frustration about not receiving pricing information. Applies whether pricing was discussed inbound or outbound, including after-hours OHQ calls where the customer asks about cost.
+8. "Price / Minimum Call Out" — pricing was discussed and is the reason the customer did not proceed. Includes: customer asks about call-out fee or minimum charge, reacts negatively to quoted pricing, says it is too expensive, questions website pricing vs quoted pricing, says they will get other quotes, expresses frustration about not receiving pricing information.
 9. "Wanted Quote Over Phone" — customer wanted a price, advice, or diagnosis over the phone without booking a site visit.
 10. "Capacity / Scheduling" — PETTR had no availability, was booked out, or timing didn't work for the customer.
 11. "Booked Elsewhere" — customer explicitly said they found or are going with another provider.
 12. "Customer Resolved" — customer's problem was fixed or no longer required before any PETTR booking.
 13. "Not Job Related" — identified internal staff communication (requires is_internal_did signal).
 
-LAST RESORT — NFUR and CU (only when rules 1-13 do not apply):
-14. "No Follow-Up Recorded" — has_outbound is FALSE, AND no substantive discussion occurred. Use ONLY when the customer made an enquiry (form, OHQ message, brief call) and there is no evidence that PETTR engaged with the customer's problem, pricing, or booking. If an OHQ operator or staff member discussed the problem, pricing, availability, or next steps with the customer — even briefly — that IS engagement. Classify by rules 1-13 instead.
+THEN: If no answered non-OHQ inbound call exists, or if the last inbound touch is an unanswered form/email/OHQ AFTER a prior answered call with no follow-up:
+14. "No Follow-Up Recorded" — there is no record of PETTR following up after the customer's last inbound touch. Use when: (a) the customer submitted a form or left an OHQ message and no outbound follow-up is recorded, OR (b) the customer's last inbound touch is a form/email/OHQ message sent AFTER an earlier answered call, and no outbound follows that last touch. NFUR is a DATA STATE — it says "no follow-up on record," not "nobody followed up." The tech may have called back on an untracked mobile. OHQ leads with no recorded outbound ARE NFUR — the OHQ intake is a message-take, not engagement.
 15. "Customer Unresponsive" — has_outbound is TRUE, AND the customer did not meaningfully respond. Outbound calls were unanswered (0s duration, voicemail), or emails/SMS went unreplied. If the customer answered and had a conversation, they were responsive — classify by rules 1-13.
 16. "Other" — does not fit any defined category. Flags for human review.
 

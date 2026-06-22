@@ -131,7 +131,7 @@ export const TAXONOMY: readonly Leaf[] = [
     sources: ['t7'],
     t7Set: 'NQ_NB',
     // Source: NQ_NB_SYSTEM_PROMPT line "No Follow-Up Recorded" (t7-classifier.ts)
-    definition: 'Customer made an enquiry and PETTR never made an outbound follow-up (call/SMS/email), AND no substantive discussion occurred during the interaction. Use NFUR where the customer submitted a form, left an OHQ message, or had a brief inbound call with no real discussion, and nobody followed up. Do NOT use NFUR where PETTR had a substantive live discussion with the customer about the job, pricing, availability, or next steps — classify the actual barrier instead. INCLUDES: after-hours OHQ leads where follow-up goes to untracked tech mobile.',
+    definition: 'There is no record of PETTR following up after the customer\'s last inbound touch. NFUR is a DATA STATE — it says "no follow-up on record," not "nobody followed up." Use when: (a) customer submitted a form or left an OHQ message and no outbound follow-up is recorded, or (b) customer\'s last inbound is a form/email/OHQ after an earlier answered call, with no outbound after it. NFUR CANNOT apply when the lead\'s interaction is an answered non-OHQ inbound call — an answered call IS engagement, classify the barrier instead. OHQ calls are intake/message-take, not engagement — NFUR applies if no outbound follows the OHQ handoff. INCLUDES: after-hours OHQ leads where follow-up goes to untracked tech mobile.',
   },
   {
     name: 'Tenant / Strata Referral',
