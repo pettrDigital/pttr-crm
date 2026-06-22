@@ -14,9 +14,10 @@
  */
 
 /**
- * Explicit internal email addresses. Address-level, not domain-level.
- * Confirmed via lifetime audit: 101 leads across all 4 domains, zero
- * real customer enquiries, zero converters.
+ * Internal email addresses are now in BQ table ds_crm.test_emails.
+ * This constant is kept for backward compatibility with any code that
+ * imports it directly, but the canonical source is the BQ table.
+ * To add a new internal email: INSERT into test_emails, not here.
  */
 export const INTERNAL_EMAIL_ADDRESSES: readonly string[] = [
   'alexm@mrwasher.com.au',
@@ -29,17 +30,13 @@ export const INTERNAL_EMAIL_ADDRESSES: readonly string[] = [
 /**
  * Build the SQL WHERE clause fragment for test exclusion.
  * Combines: is_test_lead flag, test_wc_leads table, test_numbers table,
- * and the explicit email address list.
+ * and test_emails table (all in BQ).
  *
  * @param aleAlias - alias for all_leads_enriched (e.g. 'ale')
  * @param ds - dataset prefix for test tables (e.g. 'pttr-taskdata.ds_crm')
  * @returns SQL boolean expression — TRUE means the lead IS excluded
  */
 export function testExclusionWhereClause(aleAlias: string, ds: string): string {
-  const emailList = INTERNAL_EMAIL_ADDRESSES
-    .map(e => `'${e}'`)
-    .join(', ')
-
   // COALESCE to FALSE: when the LEFT JOIN to ALE produces no row (NULL for
   // all fields), the lead is NOT excluded. Without this, NOT (NULL OR ...) = NULL
   // = falsy, silently dropping real customer leads with no enriched row.
@@ -48,7 +45,7 @@ export function testExclusionWhereClause(aleAlias: string, ds: string): string {
     OR ${aleAlias}.lead_id IN (SELECT wc_lead_id FROM \`${ds}.test_wc_leads\`)
     OR ${aleAlias}.norm_contact_phone IN (SELECT phone_e164 FROM \`${ds}.test_numbers\`)
     OR ${aleAlias}.norm_phone IN (SELECT phone_e164 FROM \`${ds}.test_numbers\`)
-    OR LOWER(COALESCE(${aleAlias}.contact_email_address, '')) IN (${emailList}),
+    OR LOWER(COALESCE(${aleAlias}.contact_email_address, '')) IN (SELECT email FROM \`${ds}.test_emails\`),
     FALSE
   )`
 }
