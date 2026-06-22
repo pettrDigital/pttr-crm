@@ -5,45 +5,85 @@
 
 ---
 
-## Layer 1: Structural fixes (deterministic, no AI, $0)
+## Validated & Ready (deterministic, $0, all validated both directions)
 
-### 1a. Multi-job gate fix
+### V1. Multi-job gate fix — 138 opps, $146K revenue
 
-**Problem:** 138 opportunities gated as Booking Cancelled where a secondary job in the
-cluster is Completed with revenue ($146K total). The gate only checks the primary job's
-status — if it's Archived/$0, the opp is gated Booking Cancelled even when a Completed
-job exists in `all_jobnumbers`.
+Set-based gate: if ANY job in the opportunity's existing cluster (all_jobnumbers) is
+Completed with `invoiced_total_ex > 0`, gate as `determined:Completed and Invoiced`
+regardless of which job is primary. Revenue attribution = nearest-by-date per S5.3
+(conversion ledger).
 
-**Fix:** Set-based gate rule: if ANY job in the opportunity's cluster is Completed with
-`invoiced_total_ex > 0`, gate as `determined:Completed and Invoiced` regardless of which
-job is primary.
-
-**Validation:** Dry-run completed — 138/138 flip correctly, 0 false flips, no-op on
-single-job opps, 0 Account opps affected. All COD, all forward-looking.
+**Validation:** Dry-run 138/138 flip correctly, 0 false flips, no-op on single-job opps,
+0 Account opps affected. All COD, all forward-looking, edge-defined clusters.
 
 **Where:** `build_lead_timeline.sql` gate logic (opp_gate CTE).
 
-**Impact:** 138 opps reclassified, $146K revenue correctly attributed.
+### V2. NFUR deterministic veto — 24 opps reclassify
 
-### 1b. NFUR deterministic veto
+Sequenced structural check: if the lead's LAST inbound touch is an answered non-OHQ
+inbound call (>15s duration), AND there is no later unfollowed form/email/OHQ after it,
+NFUR is forbidden. Enforce in `validateVerdict`.
 
-**Problem:** 25 leads classified NFUR where the last interaction is an answered non-OHQ
-inbound call (>15s). By the structural NFUR definition, an answered call IS engagement —
-NFUR cannot apply. GPT-4.1 ignored this on v1 and classified them NFUR at 0.85-0.95
-confidence.
+NOT "any answered call on the timeline" — the sequence matters. An answered call
+followed by an unfollowed OHQ message IS NFUR (for the unfollowed OHQ). Only when the
+answered call itself is the final unresolved interaction does the veto fire.
 
-**Fix:** Add a deterministic check to `validateVerdict` (or as a pre-pass constraint):
-if the timeline has an answered non-OHQ inbound call (>15s) as the last inbound touch
-with no later unfollowed form/email/OHQ, reject NFUR and force reclassification.
+**Validation:** Footed across all 125 v1 NFUR leads:
+- 24 vetoed (answered call is last touch, no later unfollowed touch)
+- 81 pass (OHQ after call, no recorded follow-up = genuine NFUR data state)
+- 19 pass (form-only, no calls = genuine NFUR)
+- 1 has outbound (structural oddity, not NFUR)
+- Total: 125 ✓
 
-**Validation:** Footed — 25 vetoed, 100 pass, 125 total ✓. Zero forward AroFlo jobs
-exist for the 25 (confirmed genuine non-conversions — they should be barrier-classified,
-not NFUR).
+Zero false vetoes confirmed: the 100 genuine NFUR have no answered non-OHQ call as
+their last touch.
 
-**Where:** `scripts/run-cascade.ts` validateVerdict function, or new pre-pass fact.
+**Where:** `scripts/run-cascade.ts` validateVerdict function.
 
-**Impact:** 25 leads reclassify from NFUR to specific barrier categories (Price/MCO,
-Capacity, WQoP, SNP, etc.).
+### V3. Dropped-call gate — 30 opps flip Unable to Classify → Dropped Call
+
+Deterministic gate rule: an inbound call with transcript content but no real caller
+speech → `determined:Not Captured / Dropped Call` (canonical leaf: `Dropped Call`,
+stage: `Not Captured`). Only when the dropped call is the sole substantive touch on
+the opportunity (8 multi-touch opps excluded — they gate by their other content).
+
+**Speech-absence predicate (corrected regex):**
+```sql
+NOT REGEXP_CONTAINS(full_content, r'(?:Caller|Caller:)\n([^\n]{15,})')
+```
+Dual-format: matches both `Caller\n` (337 transcripts) and `Caller:\n` (662 transcripts).
+15-char threshold filters transcription noise ("It.", "Ra.", "Hello.").
+
+**NO duration or char-length cap.** The prior caps (dur ≤60s, len ≤200) were patches for
+a broken regex that only matched `Caller\n` (no colon), leaking 479 real conversations.
+Corrected regex: 40 calls detected, max duration 116s, zero false positives. The caps
+created false negatives (2 genuine dropped calls at 86s and 116s). Do NOT re-add caps.
+
+**CAUSAL NOTE:** The broken regex `r'Caller\n.{15,}'` missed the `Caller:\n` format
+(662 of 999 caller-containing transcripts). Duration/char caps were added as safety nets,
+hiding the regex failure. Corrected regex eliminates the leak, making caps redundant.
+
+**Validation:**
+- 40 no-speech calls detected, 38 unique opps
+- 30 opps where dropped call is sole content → flip to Dropped Call
+- 8 opps with other substantive touches → excluded (gate by other content)
+- All 40 confirmed genuine: IVR greetings, reception failures, voicemail, garbled
+- Zero false positives in full sweep (all 40 pasted and reviewed)
+- 2 known spam calls (Wefix, Service Hotline) correctly register as has-caller-speech
+  under corrected regex (excluded from Dropped Call, flow to AI for Spam classification)
+
+**Where:** `build_lead_timeline.sql` gate logic (before Unable to Classify fallback).
+
+---
+
+## Layer 1: Structural fixes (deterministic, no AI, $0)
+
+NOTE: V1-V3 above are the validated subset of Layer 1, promoted because they are
+validated both directions and ready to ship. The items below remain in Layer 1 but
+have not yet been fully validated.
+
+### 1a-1b: See Validated & Ready tier above (V1, V2, V3)
 
 ---
 
