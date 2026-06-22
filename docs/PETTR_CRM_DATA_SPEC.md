@@ -566,6 +566,9 @@ The **opportunity is the unit of lead counting**. All WC touches, 8x8 calls, and
 - **`wc_lead_id`** (scalar) = the primary WC touch, derived as first-touch from `wc_leads[0]`. Used for single-value displays and WC joins. The derivation is swappable (e.g. nearest-to-job) without a rebuild.
 - **`wc_leads`** (array) = the lossless record of all WC-linked events in the cluster: `ARRAY<STRUCT<wc_lead_id, source, medium, keyword, campaign, channel, event_ts>>` Ordered by event_ts. One struct per WC touch.
 
+### Invoice Number Non-Uniqueness (INVARIANT)
+`invoicenumber` is NOT globally unique — AroFlo reuses invoice numbers across different jobs (confirmed: 25 cross-job collisions in invoices_deduped). Any invoice lookup, join, or dedup MUST key on `(task_jobnumber, invoicenumber)`, never `invoicenumber` alone. `vw_job_invoiced` dedups on this composite key.
+
 ### Key Fields
 `opportunity_id`, `phone`, `jobnumber`, `all_jobnumbers`, `job_count`, `call_count`, `form_count`, `max_duration_sec`, `opp_type` (job_matched / gap_based / no_inbound), `channel`, `source`, `medium`, `campaign`, `keyword`, `profile`, `wc_lead_id` (derived primary), `wc_leads` (array, lossless), `matched_phones`, `matched_emails`, `is_no_inbound_enquiry`, `has_answered_call`, `is_existing_customer`
 
@@ -1089,6 +1092,87 @@ Exclude these domains from PHONE_MATCH/EMAIL_MATCH precomputation in `t7_match_c
 2. After building, confirm green at ALL THREE layers (S0) and re-run the verification. "Committed" is not "done."
 3. If a build contradicts this spec, the spec wins unless Ric changes it -- recorded HERE, not just in chat.
 4. Mark items verified-built with commit hash + verification result, so no future session re-discovers a settled decision.
+
+---
+
+## S19. Customer-Attribution Layer — Marketing ROI (FUTURE BUILD)
+
+**Status:** Specced, not built. Separate effort from the cascade/conversion pipeline. Does NOT touch
+the 30-day clustering window or opportunity membership.
+
+### Why this exists (the problem it solves)
+
+"Lead" means two different things in two different ledgers, and the repeat customer is where they split:
+
+- **Conversion ledger** — a lead is an *event* (phone call, email, form). A repeat call is a new event,
+  so a new lead, correctly its own opportunity. Unchanged by this layer.
+- **ROI ledger** — the unit is the *acquisition*. One paid touch (CPC click, magnet) wins a customer;
+  every event that customer generates afterward is return on that spend. The repeat call has no ad
+  source of its own — crediting it to "direct/organic" is wrong, because the original paid touch earned
+  it.
+
+The acquiring touch and the revenue-generating event live on **different opportunities**: the gclid/UTM
+is on opp #1 (the CPC call); the repeat revenue is on opp #2 (a direct call, no source). Nothing on
+opp #2 records that CPC earned it. Without a customer link, CPC ROAS is **understated by exactly the
+repeat business that makes CPC worth buying.**
+
+### Why NOT window extension (settled, do not revisit)
+
+Tested (CC, 2026-06-21 session): extending the clustering window to 45/60/90 days to capture repeat jobs is
+destructive. 86% of jobs pulled in at 31–90 days are **already correctly attributed to their own
+opportunity** — widening the window *reassigns* them off their correct opp, double-counting and
+breaking ~$1.27M of correct attribution. The repeat business is NOT lost; it is already captured on its
+own opportunities. Marketing needs to **link** a customer's opportunities, not **merge** them.
+
+**Clustering window stays at 30 days (edge-defined). The customer layer sits ABOVE opportunities, not
+inside the clustering.**
+
+### Design
+
+1. **customer_id over opportunities.** Phone-keyed customer identity that links all of one customer's
+   opportunities together. Reuses the existing graph clustering, but at *customer* grain, not *enquiry*
+   grain. Every opportunity keeps its own membership, attribution, and revenue intact — customer_id is
+   an additional layer connecting them, moving no jobs.
+
+2. **Originating paid touch.** For each customer, identify the paid acquisition event (CPC via
+   gclid/UTM, magnet campaign). This is the channel that gets credit for the customer's lifetime
+   revenue.
+
+3. **Customer-level revenue rollup.** Sum the customer's opportunities' invoiced revenue and attribute
+   to the originating paid channel. No revenue moves between opportunities — this is a marketing-ledger
+   rollup that reads across opps, not a re-attribution that writes to them.
+
+4. **Marketing-attribution lookback window** — a SEPARATE parameter from the 30-day clustering window.
+   Set to match ad-platform conversion windows (default 90 days) so CPC ROAS reconciles against what
+   Google/Meta report. This window governs how far after the paid touch a customer's revenue still
+   rolls up to that channel — it does NOT change clustering or opportunity membership.
+
+### Open decisions (must be made explicitly before build — flagged, not chosen)
+
+- **Multi-paid-touch model.** A customer acquired by CPC, later re-touched by a magnet before a second
+  job — does CPC (first/acquiring touch) keep the customer, or does the magnet (last paid touch) claim
+  that job? First-touch flatters acquisition channels; last-touch flatters retargeting/magnet. **This
+  is THE question for comparing CPC vs magnet spend** — the comparison is made of these cases. Pick a
+  model (first / last / split) and state it.
+
+- **No-paid-touch customers.** A word-of-mouth/phone customer who never clicked anything generates real
+  revenue belonging to no channel. Must roll up to an explicit `organic/unattributed` bucket — never
+  dropped or misassigned, or every channel's ROAS inflates from a wrong denominator.
+
+### Invariant: marketing-ledger firewall
+
+One job's revenue can legitimately count toward a channel's acquisition value AND exist as actual
+invoiced revenue on its own opportunity. Therefore the marketing-attributed total WILL exceed real
+invoiced revenue — correct for ROAS, catastrophic if it touches a P&L. The customer-attribution figure
+is a **marketing-only field, structurally barred from summing into company revenue.** Same firewall as
+the per-lead conversion sums, one level up.
+
+### What is NOT changed by this layer
+
+- 30-day clustering window — unchanged.
+- Opportunity membership and job-to-opp attribution — unchanged.
+- Conversion-ledger lead revenue (nearest-completed-by-date within existing cluster) — unchanged.
+- The 138-opp set-based gate fix — independent, already scoped.
 
 ---
 
