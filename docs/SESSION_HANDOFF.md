@@ -201,15 +201,20 @@ Multiple runs coexist by `run_id`. Filter a specific run by `run_label`.
    a Completed secondary job with revenue ($146K). Set-based gate dry-run validated:
    138/138 flip correctly, 0 false flips, no-op on single-job, no Account opps
    touched. Ship it.
-2. **Re-run cascade with prompt v2** — content-first rules, NFUR/CU as last resort.
-   Measure NFUR/CU redistribution vs first run. Also picks up spine fixes (internal
-   email edge exclusion, Donna test_numbers exclusion).
-3. **Apply parked invoice dedup fixes** — `vw_job_invoiced.dedup.sql` and
+2. **Re-run cascade with prompt v3** — NFUR structural definition (data state, not
+   content judgment). Picks up: spine fixes (internal email edge exclusion, Donna
+   test_numbers), NFUR veto (25 answered-call leads reclassify to barrier). Expected
+   NFUR: 100 (down from 126), 25 reclassify to Price/Capacity/WQoP/etc.
+3. **NFUR deterministic veto in validateVerdict** — structural enforcement:
+   answered non-OHQ inbound call (>15s) on timeline AND no later unfollowed touch
+   → NFUR forbidden. Safety net so the AI can't override the structural rule.
+   Footed: 25 vetoed, 100 pass, 125 total ✓.
+4. **Apply parked invoice dedup fixes** — `vw_job_invoiced.dedup.sql` and
    `vw_job_revenue.dedup.sql`. $596 on 1 job (JN 140927). Validated, not deployed.
-4. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable.
-5. **Customer-attribution layer (S19)** — specced, future build.
-6. **AroFlo API correspondence-coverage verification** (spec S2.10).
-7. **Carried items**: conflation guard by-list, payment-regex fix,
+5. **Generate docs/t7_wc_reconciliation_final.md** — the deliverable.
+6. **Customer-attribution layer (S19)** — specced, future build.
+7. **AroFlo API correspondence-coverage verification** (spec S2.10).
+8. **Carried items**: conflation guard by-list, payment-regex fix,
    vw_lead_enriched fanout.
 
 ### L5 — OPENAI ENGINE + REPEAT LEADS + PROMPT REFINEMENT (2026-06-21)
@@ -272,14 +277,26 @@ Multiple runs coexist by `run_id`. Filter a specific run by `run_label`.
 - Token usage tracking: prompt/completion/total tokens and estimated cost reported
   after T7.1, T7.2, and cascade complete.
 
-**Prompt v2 (content-first classification):**
-- NQ_NB rules restructured: explicit "CLASSIFY BY CONTENT FIRST, NOT BY OUTBOUND
-  STATUS" instruction. All content-based rules (SNP, Price, Capacity, WQoP, Tenant,
-  etc.) are top-level numbered rules 1-13. NFUR and CU are rules 14-15, labelled
-  "LAST RESORT". OHQ calls explicitly identified as substantive interactions.
-- SNP rule expanded with specific service types (solar, aircon, appliances, EV
-  chargers, data cabling, handyman, white goods).
-- Price/MCO rule includes OHQ pricing discussions.
+**Prompt v3 (NFUR structural definition):**
+- NFUR redefined as a DATA STATE, not a content judgment. "No follow-up on record"
+  — not "nobody followed up." Removes "substantive discussion" language entirely.
+- Answered non-OHQ inbound call = engagement → NFUR forbidden for that interaction.
+- OHQ calls = intake/message-take, not engagement → NFUR applies if no outbound follows.
+- Sequence rule: if last inbound is form/email/OHQ AFTER an answered call, with no
+  outbound after it → NFUR applies to that unfollowed touch.
+- Rules 1-13 (barrier categories) fire first when an answered call exists.
+- SNP expanded with specific service types (solar, aircon, appliances, etc.).
+- CU unchanged (outbound made, customer didn't respond).
+
+**NFUR analysis (footed against v1 run, 125 leads):**
+- 25 NOT NFUR: 24 answered non-OHQ call as last touch + 1 has outbound.
+  These should reclassify to barrier categories (Price, Capacity, WQoP, etc.).
+  Calls ranged 137-421s. Zero had a forward AroFlo job (genuine non-conversions).
+- 81 GENUINE NFUR: 80 OHQ after-hours + 1 missed callback after answered call.
+  OHQ rows are dispatch handoffs (76/80 within 5 min of call, 0 more than 1 hour).
+  OHQ intake is message-take, not engagement. No recorded follow-up = NFUR.
+- 19 GENUINE NFUR: form-only, no calls, no outbound. Confirmed no forward job.
+- Total: 100 genuine NFUR + 25 not-NFUR = 125 ✓ (foots).
 
 **First OpenAI run completed (2026-06-21):**
 - Run label: `2026-06-21T18_37_03_822Z | pop=live_post_dec2025 | scope=all`
