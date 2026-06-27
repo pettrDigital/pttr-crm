@@ -18,6 +18,10 @@ CONTACTS_URL = "https://aroflo-contacts-ingest-tuxv3ywlea-ts.a.run.app"
 QUOTES_URL = "https://aroflo-quotes-ingest-tuxv3ywlea-ts.a.run.app"
 CLIENT_CF_URL = "https://aroflo-clientcustomfields-ingest-tuxv3ywlea-ts.a.run.app"
 USERPROFILES_URL = "https://aroflo-userprofiles-ingest-tuxv3ywlea-ts.a.run.app"
+# TODO: Add TIMESHEETS_URL once aroflo-timesheets-ingest Cloud Run service is deployed
+# Timesheets zone requires safe='/' in URL encoding for date slashes (YYYY/MM/DD)
+# and only supports a single WHERE clause (no date range, only > or <)
+# See pettr-data/pipelines/ingest_timesheets.py for the working pattern
 PROJECT_ID = "pttr-taskdata"
 DATASET_ID = "ds_aroflo"
 
@@ -103,18 +107,11 @@ def daily_orchestrator(request):
     print("invoices_for_bi rebuild complete")
 
     # --- INVOICE ITEMS ---
-    wm_result = list(bq.query("""
-        SELECT FORMAT_DATE('%Y-%m-%d', DATE_SUB(
-            MAX(SAFE.PARSE_DATE('%Y/%m/%d', id.dateinvoiced)), INTERVAL 1 DAY
-        )) AS watermark
-        FROM `pttr-taskdata.ds_aroflo.invoice_items_deduped` ii
-        JOIN `pttr-taskdata.ds_aroflo.invoices_deduped` id ON ii.invoiceid = id.invoiceid
-    """).result())
-    invoice_items_date_start = wm_result[0]["watermark"] if wm_result and wm_result[0]["watermark"] else date_start
-    print(f"Invoice items watermark: {invoice_items_date_start}")
+    # Use same 90-day window as invoices to avoid missing backdated/edited invoices
+    print(f"Invoice items date_start: {invoice_date_start}")
 
     r6 = requests.get(
-        f"{INVOICE_ITEMS_URL}?date_start={invoice_items_date_start}&max_pages=10",
+        f"{INVOICE_ITEMS_URL}?date_start={invoice_date_start}&max_pages=10",
         timeout=540
     )
     results["invoice_items"] = r6.json()
